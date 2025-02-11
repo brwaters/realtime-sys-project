@@ -427,7 +427,9 @@ static void prvSetupHardware( void )
 
 	/* TODO: Setup the clocks, etc. here, if they were not configured before
 	main() was called. */
-	GPIO_Init();
+	GPIO_Setup();
+	// ADC_Setup();
+
 }
 
 static void GPIO_Setup( void ) {
