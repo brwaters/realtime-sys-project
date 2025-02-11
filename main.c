@@ -145,6 +145,9 @@ functionality.
 #include "../FreeRTOS_Source/include/semphr.h"
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
+/* GPIO includes. */
+#include "stm32f4xx_gpio.c"
+#include "stm32f4xx_adc.c"
 
 
 
@@ -167,6 +170,8 @@ functionality.
  * that was not already performed before main() was called.
  */
 static void prvSetupHardware( void );
+static void GPIO_Setup( void );
+static void ADC_Setup ( void );
 
 /*
  * The queue send and receive tasks as described in the comments at the top of
@@ -183,7 +188,7 @@ xQueueHandle xQueue_handle = 0;
 
 /*-----------------------------------------------------------*/
 
-int main(void)
+int main( void )
 {
 
 	/* Initialize LEDs */
@@ -422,5 +427,50 @@ static void prvSetupHardware( void )
 
 	/* TODO: Setup the clocks, etc. here, if they were not configured before
 	main() was called. */
+	GPIO_Init();
 }
 
+static void GPIO_Setup( void ) {
+	// Enable Clock
+	RCC_AHB1_PeriphClockCmd(RCC_AHB1_Periph_GPIOC, ENABLE);
+	// GPIO_Init
+	// Must create an InitStruct to set characteristics of GPIOC, then pass
+	// into GPIO_Init function
+	GPIO_InitTypeDef GPIO_InitStruct;
+	GPIO_InitStruct.GPIO_Pin = GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF; // Alternate Function
+	GPIO_InitStruct.GPIO_OType = GPIO_OType_PP; // Push-Pull
+	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_DOWN; // Pull Down?
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_100MHz; // Highest?
+
+	GPIO_TypeDef GPIOC;
+	// Pass GPIO_InitStruct to GPIOC
+	GPIO_Init(GPIOC, GPIO_InitStruct);
+	// Set or Reset Bits
+	GPIO_SetBits(GPIOC, 0x06); // Set GPIOC Pin 6 (Data)?
+}
+
+static void ADC_Setup ( void ) {
+	// Enable Clock
+	RCC_APB2PeriphClockCmd(RCC_APB2ENR_ADC1EN, ENABLE);
+	// ADC Init Configuration
+	ADC_InitTypeDef ADC_InitStruct;
+	/*
+	 * We need to configure the ADC with the struct here
+	 * ADC_InitStruct.SOMETHINGHERE;
+	 */
+	ADC_TypeDef ADC1;
+	// Pass in the InitStruct to ADC1
+	ADC_Init(ADC1, ADC_InitStruct);
+	// ADC Enable
+	ADC_Cmd(ADC1, Enable);
+	// ADC Channel Config - Slides say to try different sample times
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_3Cycles);
+	// ADC Conversion
+	ADC_SoftwareStartConv(ADC1);
+
+	while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
+		// Once EOC set read data
+		ADC_GetConversionValue(ADC1);
+	}
+}
