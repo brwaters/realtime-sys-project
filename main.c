@@ -166,7 +166,7 @@ functionality.
 // Time for standard light length (in miliseconds):
 #define GREEN_STD_TIME 10000UL
 #define YELLOW_STD_TIME 3000UL
-#define REd_STD_TIME 5000UL
+#define RED_STD_TIME 5000UL
 
 /*
  * TODO: Implement this function for any hardware specific clock configuration
