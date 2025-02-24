@@ -200,8 +200,9 @@ xQueueHandle xLightQueue_handle = 0;
 
 int main( void )
 {
-	printf("Starting main func\n");
-	fflush(stdout);
+//	printf("Starting main func\n");
+//	fflush(stdout);
+
 	/* Initialize LEDs */
 //	STM_EVAL_LEDInit(amber_led);
 //	STM_EVAL_LEDInit(green_led);
@@ -241,10 +242,6 @@ int main( void )
 
 	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
-
-	while(1) {
-		printf("Hety!\n");
-	}
 
 	return 0;
 }
@@ -478,6 +475,7 @@ static void GPIO_Setup( void ) {
 	//GPIO_SetBits(GPIOC, 0x06); // Set GPIOC Pin 6 (Data)?
 }
 
+// TODO: Our ADC seems a little wack - major changes from high to low resulted in 362 turning into a 360
 static void ADC_Setup ( void ) {
 	printf("ADC Start\n");
 	fflush(stdout);
@@ -498,13 +496,13 @@ static void ADC_Setup ( void ) {
 	// Also confirm this is the correct channel?
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_3Cycles);
 	// ADC Conversion
-//	ADC_SoftwareStartConv(ADC1);
-//
-//	while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
-//		// Once EOC set read data
-//		;
-//	}
-//	uint16_t adcval = ADC_GetConversionValue(ADC1);
-//	printf("ADC Value: %d\n", adcval);
-//	fflush(stdout);
+	ADC_SoftwareStartConv(ADC1);
+
+	while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
+		// Once EOC set read data
+		;
+	}
+	uint16_t adcval = ADC_GetConversionValue(ADC1);
+	printf("ADC Value: %d\n", adcval);
+	fflush(stdout);
 }
