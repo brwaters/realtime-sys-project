@@ -151,7 +151,8 @@ functionality.
 //#include "../Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_gpio.c"
 //#include "../Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_adc.c"
 
-
+//#include <time.h>
+#include <stdlib.h>
 
 /*-----------------------------------------------------------*/
 #define mainQUEUE_LENGTH 100
@@ -176,16 +177,12 @@ static void prvSetupHardware( void );
 static void GPIO_Setup( void );
 static void ADC_Setup ( void );
 
+static void manualSleep(int time);
+
 /*
  * The queue send and receive tasks as described in the comments at the top of
  * this file.
  */
-//static void Manager_Task( void *pvParameters );
-//static void Blue_LED_Controller_Task( void *pvParameters );
-//static void Green_LED_Controller_Task( void *pvParameters );
-//static void Red_LED_Controller_Task( void *pvParameters );
-//static void Amber_LED_Controller_Task( void *pvParameters );
-
 static void Traffic_Flow_Task( void *pvParameters );
 static void Traffic_Generator_Task( void *pvParameters );
 static void Traffic_Light_State_Task( void *pvParameters );
@@ -200,40 +197,25 @@ xQueueHandle xLightQueue_handle = 0;
 
 int main( void )
 {
-//	printf("Starting main func\n");
-//	fflush(stdout);
-
-	/* Initialize LEDs */
-//	STM_EVAL_LEDInit(amber_led);
-//	STM_EVAL_LEDInit(green_led);
-//	STM_EVAL_LEDInit(red_led);
-//	STM_EVAL_LEDInit(blue_led);
-
 	/* Configure the system ready to run the demo.  The clock configuration
 	can be done here if it was not done before main() was called. */
 	prvSetupHardware();
 
-
 	/* Create the queue used by the queue send and queue receive tasks.
 	http://www.freertos.org/a00116.html */
+	// TODO: this could be uint8_t...
 	xStreetQueue_handle = xQueueCreate(8, sizeof( uint16_t ) );
-	// TODO: Check what happens when a full queue receives a push - will it overwrite?
-	/* The number of items the queue can hold, and the size of each item the queue holds. */
 
 	// Create a queue to hold active red/yellow/green status.
 	xLightQueue_handle = xQueueCreate(1, sizeof( uint16_t ));
 
-	// Create a queue to hold
+	// Create a queue to hold the current normalized ADC flow value.
 	xFlowQueue_handle = xQueueCreate(1, sizeof( uint16_t ));
 
 	/* Add to the registry, for the benefit of kernel aware debugging. */
 	vQueueAddToRegistry( xStreetQueue_handle, "StreetQueue" );
-
-//	xTaskCreate( Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-//	xTaskCreate( Blue_LED_Controller_Task, "Blue_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-//	xTaskCreate( Red_LED_Controller_Task, "Red_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-//	xTaskCreate( Green_LED_Controller_Task, "Green_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-//	xTaskCreate( Amber_LED_Controller_Task, "Amber_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	vQueueAddToRegistry( xLightQueue_handle, "LightQueue" );
+	vQueueAddToRegistry( xFlowQueue_handle, "FlowQueue" );
 
 	xTaskCreate( Traffic_Flow_Task, "Flow", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
@@ -241,7 +223,57 @@ int main( void )
 	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
 	/* Start the tasks and timer running. */
-	vTaskStartScheduler();
+//	vTaskStartScheduler();
+
+	uint32_t traffic_pattern;
+	uint8_t pre_light = 0x05;
+	uint32_t post_light = 0x00;
+
+	uint8_t preserving_mask = 0x00;
+	uint8_t bitmask = 0x80;
+
+	while(1) {
+		auihdiuwahdpawuhd - TODO: why isn't this preserving the bits properly
+		for (int i = 7; i >= 0; i--) {
+			if ((pre_light & bitmask) == 1) {
+				preserving_mask = preserving_mask | bitmask;
+			}
+			else {
+				break;
+			}
+
+			bitmask = bitmask >> 1;
+		}
+		pre_light = (pre_light << 1) | preserving_mask;
+		traffic_pattern = (post_light << 8) | pre_light;
+
+		// Reset for a new pattern to be input.
+		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
+		manualSleep(5000);
+		GPIO_SetBits(GPIOC, GPIO_Pin_8);
+		manualSleep(5000);
+
+//		uint32_t pattern = 0x55555;
+//		uint32_t pattern = 0xFFFFF;
+		uint32_t selector_mask = 0x1;
+		for (int i = 19 - 1; i >= 0; i--) {
+			if ((traffic_pattern & selector_mask) == 0) {
+				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
+			}
+			else {
+				GPIO_SetBits(GPIOC, GPIO_Pin_6);
+			}
+
+			GPIO_SetBits(GPIOC, GPIO_Pin_7);
+			manualSleep(100);
+			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
+			manualSleep(100);
+
+			selector_mask = selector_mask << 1;
+		}
+
+		manualSleep(5000000);
+	}
 
 	return 0;
 }
@@ -255,7 +287,6 @@ static void Traffic_Flow_Task( void *pvParameters )
 
 	while(1)
 	{
-//		if(xQueueSend(xFlowQueue_handle,&adc_val,1000))
 		if(xQueueOverwrite(xFlowQueue_handle, &adc_val))
 		{
 			vTaskDelay(500);
@@ -265,9 +296,14 @@ static void Traffic_Flow_Task( void *pvParameters )
 				;
 			}
 			// TODO: Normalize this after determining... how to do that.
-			// adc_data = adc_convert() / 409;
-			adc_val = ADC_GetConversionValue(ADC1);
-			// Something to note here for report discussion: pytting the vTaskDelay before or after the process
+			// Example from demo code: adc_data = adc_convert() / 409;
+			adc_val = ADC_GetConversionValue(ADC1) / 409;
+			// Something to note here for report discussion: putting the vTaskDelay before or after the process.
+
+			// TODO: This is lazy, and also potentially dangerous. I could easily see this somehow setting flow to 1 for no reason...
+			if (adc_val <= 0) {
+				adc_val = 1;
+			}
 		}
 		else
 		{
@@ -281,18 +317,16 @@ static void Traffic_Flow_Task( void *pvParameters )
 static void Traffic_Generator_Task( void *pvParameters )
 {
 	uint16_t traffic_flow = INITIAL_ADC;
+	uint16_t should_gen_flag = 1; // TODO: this could be uint8_t...
 
 	while(1)
 	{
 		if(xQueuePeek(xFlowQueue_handle, &traffic_flow, 500))
 		{
-			// TODO: roll a dice to determine if should create new vehicle
-			uint16_t should_gen = 0;
-
-			if (should_gen)
-			{
+			// Roll a d100 dice; if the result is LESS then the traffic flow (which is 1-100), then we spawn a new vehicle.
+			if ((rand() % 100) < traffic_flow) {
 				// BE AWARE: should_gen should ONLY EVER BE a 1 here:
-				if(xQueueSend(xStreetQueue_handle, &should_gen, 1000))
+				if(xQueueSend(xStreetQueue_handle, &should_gen_flag, 1000))
 				{
 					// Do... nothing? xQueueSend does everything we need to.
 				}
@@ -352,34 +386,106 @@ static void Traffic_Light_State_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
+// IDEA: we could probably have this run in main(), and then save our task scheduler one task.
 static void System_Display_Task( void *pvParameters )
 {
+	uint16_t light = green;
 	uint16_t should_gen_new_car = 0;
-	uint16_t pre_light = 0x01;
-//	uint16_t post_light = 0x00;
+	uint32_t traffic_pattern = 0x01; // TODO: after tested, change back to 0x01
+	uint8_t pre_light = 0x00;
+	uint32_t post_light = 0x00;
+	// Report discussion: the sizes chosen for our bit representation.
+
+	// Example
+	// unsigned char digits[10] = { 0x3f, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
 
 	while(1)
 	{
-//		if(xQueueRecieve(xStreetQueue_handle, &should_gen_new_car, 500))
-//		{
-//			if (should_gen_new_car) {
-//				pre_light = pre_light | 0x01;
-//			}
-//		}
+		// Light up the correct traffic control light.
+		if (xQueuePeek(xLightQueue_handle, &light, 500)) {
+			// TODO: could probably remove these if blocks by a modulo or some other math operation to use [light] directly.
+			if (light == green) {
+				// Green LED on Pin 2
+				GPIO_ResetBits(GPIOC, GPIO_Pin_0);
+				GPIO_SetBits(GPIOC, GPIO_Pin_2);
+			}
+			else if (light == yellow) {
+				// Yellow LED on Pin 1
+				GPIO_ResetBits(GPIOC, GPIO_Pin_2);
+				GPIO_SetBits(GPIOC, GPIO_Pin_1);
+			}
+			else {
+				// Red LED on Pin 0
+				GPIO_ResetBits(GPIOC, GPIO_Pin_1);
+				GPIO_SetBits(GPIOC, GPIO_Pin_0);
+			}
+		}
 
-		// TODO: printf is not working anymore! Beg Brent for help tomorrow...
-		pre_light = pre_light << 1;
+		// Consume 1 message from the StreetQueue, which will either be empty or a 1.
+		if(xQueueReceive(xStreetQueue_handle, &should_gen_new_car, 500))
+		{
+			if (should_gen_new_car) {
+				pre_light = pre_light | 0x01;
+				should_gen_new_car = 0;
+			}
+		}
 
-		// HOW TO WRITE TO DATA PORT?
-		GPIO_ResetBits(GPIOC, GPIO_Pin_6);
-		GPIO_Write(GPIOC, pre_light);
-		GPIO_SetBits(GPIOC, GPIO_Pin_6);
+		// Shift post_light always and pre_light conditionally
+		post_light = post_light << 1;
+		uint8_t preserving_mask = 0x00;
+		uint8_t bitmask = 0x80;
+		for (int i = 7; i >= 0; i--) {
+			if (pre_light & bitmask == 1) {
+				preserving_mask = preserving_mask | bitmask;
+			}
+			else {
+				break;
+			}
 
-		// unsigned char digits[10] = { 0x3f, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+			bitmask = bitmask >> 1;
+		}
+		pre_light = (pre_light << 1) | preserving_mask;
+		traffic_pattern = (post_light << 8) | pre_light;
+
+		/////////////////////////////////
+
+		// Send 0 to Shift Register Reset Pin, which is Active-Low.
+		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
+		manualSleep(5000);
+		GPIO_SetBits(GPIOC, GPIO_Pin_8);
+		manualSleep(5000);
+		// This will be an interesting thing to discuss in the report: the decision between sleep() and vTaskDelay VS manual sleep.
+			// sleep() is blocking, whereas vTaskDelay will give resources to other tasks and not guarantee a consistent wait time.
+
+		uint32_t selector_mask = 0x1;
+		for (int i = 21 - 1; i >= 0; i--) {
+			if ((traffic_pattern & selector_mask) == 0) {
+				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
+			}
+			else {
+				GPIO_SetBits(GPIOC, GPIO_Pin_6);
+			}
+
+			GPIO_SetBits(GPIOC, GPIO_Pin_7);
+			manualSleep(100);
+			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
+			manualSleep(100);
+
+			selector_mask = selector_mask << 1;
+		}
 
 		vTaskDelay(500);
 	}
 }
+
+/*-----------------------------------------------------------*/
+
+static void manualSleep(int time) {
+	for (int i = time; i > 0; i--) {
+		// Wait
+	}
+}
+
 
 /*-----------------------------------------------------------*/
 
@@ -464,7 +570,7 @@ static void GPIO_Setup( void ) {
 	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_OUT; // Alternate Function // out is also an option
 	GPIO_InitStruct.GPIO_OType = GPIO_OType_PP; // Push-Pull
 	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL; // Pull Down? // no pull is also an option
-	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz; // Highest? // 50 and 25hz also work
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz; // Highest? // 50 and 25hz also work // Faster the clock is, drives the signal harder, draws more current, more spiking and ringing which poses problems
 	GPIO_Init(GPIOC, &GPIO_InitStruct);
 
 	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_3;
