@@ -165,9 +165,13 @@ functionality.
 #define INITIAL_ADC 50
 
 // Time for standard light length (in miliseconds):
-#define GREEN_STD_TIME 10000UL
-#define YELLOW_STD_TIME 3000UL
-#define RED_STD_TIME 5000UL
+#define GREEN_STD_TIME 200UL // 0.2 seconds
+#define YELLOW_STD_TIME 3000UL // 3 seconds
+#define RED_STD_TIME 200UL // 0.2 seconds
+// Somewhat unintuitively, despite std_time being less than yellow, green and red will be boosted by ADC's value, which will end up max 10 seconds
+
+#define DICE_CEIL 80
+#define DICE_FLOOR 10
 
 /*
  * TODO: Implement this function for any hardware specific clock configuration
@@ -217,63 +221,96 @@ int main( void )
 	vQueueAddToRegistry( xLightQueue_handle, "LightQueue" );
 	vQueueAddToRegistry( xFlowQueue_handle, "FlowQueue" );
 
-	xTaskCreate( Traffic_Flow_Task, "Flow", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
+	xTaskCreate( Traffic_Flow_Task, "Flow", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate( Traffic_Light_State_Task, "Light_State", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 
 	/* Start the tasks and timer running. */
-//	vTaskStartScheduler();
+	vTaskStartScheduler();
 
-	uint32_t traffic_pattern;
-	uint8_t pre_light = 0x05;
-	uint32_t post_light = 0x00;
+	//////////////////////////
 
-	uint8_t preserving_mask = 0x00;
-	uint8_t bitmask = 0x80;
+//	uint32_t traffic_pattern = 0x00000;
+//	uint8_t pre_light = 0x00; // 0101 0000
+//	uint32_t post_light = 0x00;
+//
+//	uint8_t preserving_mask = 0x00;
+//	uint8_t bitmask = 0x80;
+//
+//	int debug = 1;
 
-	while(1) {
-		auihdiuwahdpawuhd - TODO: why isn't this preserving the bits properly
-		for (int i = 7; i >= 0; i--) {
-			if ((pre_light & bitmask) == 1) {
-				preserving_mask = preserving_mask | bitmask;
-			}
-			else {
-				break;
-			}
+//	while(1) {
 
-			bitmask = bitmask >> 1;
-		}
-		pre_light = (pre_light << 1) | preserving_mask;
-		traffic_pattern = (post_light << 8) | pre_light;
-
-		// Reset for a new pattern to be input.
-		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
-		manualSleep(5000);
-		GPIO_SetBits(GPIOC, GPIO_Pin_8);
-		manualSleep(5000);
-
-//		uint32_t pattern = 0x55555;
-//		uint32_t pattern = 0xFFFFF;
-		uint32_t selector_mask = 0x1;
-		for (int i = 19 - 1; i >= 0; i--) {
-			if ((traffic_pattern & selector_mask) == 0) {
-				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
-			}
-			else {
-				GPIO_SetBits(GPIOC, GPIO_Pin_6);
-			}
-
-			GPIO_SetBits(GPIOC, GPIO_Pin_7);
-			manualSleep(100);
-			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
-			manualSleep(100);
-
-			selector_mask = selector_mask << 1;
-		}
-
-		manualSleep(5000000);
-	}
+//		if (debug) {
+//			pre_light = pre_light | 0x1;
+//			debug = 0;
+//		}
+//		else {
+//			debug = 1;
+//		}
+//
+//		traffic_pattern = (post_light << 8) | pre_light;
+//
+//		/////////////////////////////////////
+//
+//		// Reset for a new pattern to be input.
+//		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
+//		manualSleep(5000);
+//		GPIO_SetBits(GPIOC, GPIO_Pin_8);
+//		manualSleep(5000);
+//
+////		uint32_t pattern = 0x55555;
+////		uint32_t pattern = 0xFFFFF;
+//		uint32_t selector_mask = 0x40000; // 0100 0000 0000 0000 0000
+//		for (int i = 19 - 1; i >= 0; i--) {
+//			if ((traffic_pattern & selector_mask) == 0) {
+//				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
+//			}
+//			else {
+//				GPIO_SetBits(GPIOC, GPIO_Pin_6);
+//			}
+//
+//			GPIO_SetBits(GPIOC, GPIO_Pin_7);
+//			manualSleep(100);
+//			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
+//			manualSleep(100);
+//
+//			selector_mask = selector_mask >> 1;
+//		}
+//
+//
+//
+//		/////////////////////////////////////
+//
+////		preserving_mask = 0x00;
+////		bitmask = 0x80; // 1000 0000, the 1 shifts to the right to select bits
+////
+////		for (int i = 7; i >= 0; i--) {
+////			if ((pre_light & bitmask) != 0) {
+////				preserving_mask = preserving_mask | bitmask;
+////			}
+////			else {
+////				break;
+////			}
+////
+////			bitmask = bitmask >> 1;
+////		}
+//
+//		post_light = post_light << 1;
+//
+//		// TODO: when ported into task, use this to encapuslate the if to add a car to  and preserving mask
+////		if (state == red || state == yellow) {
+////
+////		}
+//
+//		if ((pre_light & 0x80) != 0) {
+//			post_light = post_light | 0x1;
+//		}
+//		pre_light = (pre_light << 1) | preserving_mask;
+//
+//		manualSleep(5000000);
+//	}
 
 	return 0;
 }
@@ -284,26 +321,39 @@ int main( void )
 static void Traffic_Flow_Task( void *pvParameters )
 {
 	uint16_t adc_val = INITIAL_ADC;
+	uint32_t unnorm_val;
 
 	while(1)
 	{
 		if(xQueueOverwrite(xFlowQueue_handle, &adc_val))
 		{
+//			printf("$$ Overwrote ADC flow to %d\n", adc_val);
 			vTaskDelay(500);
+
+			// Begin reading a value from the ADC.
 			ADC_SoftwareStartConv(ADC1);
 			while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
 				// Once EOC set read data
 				;
 			}
-			// TODO: Normalize this after determining... how to do that.
-			// Example from demo code: adc_data = adc_convert() / 409;
-			adc_val = ADC_GetConversionValue(ADC1) / 409;
+			unnorm_val = ADC_GetConversionValue(ADC1);
+
+			// Normalize the value so that it lands between 0 and 100.
+//			printf("$$ What is our ADC reading? %d\n", unnorm_val);
+			adc_val = 100 * (unnorm_val / 65520.0f); // Normalization value determined by observed maximum reading from potentiometer.
+
+			// We flip the value so that it is representative of resistance
+			adc_val = 100 - adc_val;
+//			printf("$$ Normed ADC Reading: %d\n", adc_val);
 			// Something to note here for report discussion: putting the vTaskDelay before or after the process.
 
-			// TODO: This is lazy, and also potentially dangerous. I could easily see this somehow setting flow to 1 for no reason...
-			if (adc_val <= 0) {
-				adc_val = 1;
+			// We just do this to avoid a divide by 0 elsewhere.
+			// As it turns out, our initial minimum level as too powerful! Resulting in no vehicles appearing (as there was 1% chance).
+			// So we are raising the floor so that we can guarantee at least SOME cars appear.
+			if (adc_val <= DICE_FLOOR) {
+				adc_val = 10;
 			}
+			printf("$$ Normed ADC Reading: %d\n", adc_val);
 		}
 		else
 		{
@@ -324,15 +374,20 @@ static void Traffic_Generator_Task( void *pvParameters )
 		if(xQueuePeek(xFlowQueue_handle, &traffic_flow, 500))
 		{
 			// Roll a d100 dice; if the result is LESS then the traffic flow (which is 1-100), then we spawn a new vehicle.
-			if ((rand() % 100) < traffic_flow) {
+			int result = rand() % 100;
+			printf("++ Dice Result: %d\n", result);
+
+
+			if (result < traffic_flow) {
 				// BE AWARE: should_gen should ONLY EVER BE a 1 here:
 				if(xQueueSend(xStreetQueue_handle, &should_gen_flag, 1000))
 				{
+					printf("++ Traffic Sent.\n");
 					// Do... nothing? xQueueSend does everything we need to.
 				}
 				else
 				{
-					printf("Traffic Gen Failed!\n");
+					printf("++ Traffic Gen Failed!\n");
 				}
 			}
 			vTaskDelay(500);
@@ -344,41 +399,58 @@ static void Traffic_Generator_Task( void *pvParameters )
 
 static void Traffic_Light_State_Task( void *pvParameters )
 {
+	uint16_t traffic_flow = INITIAL_ADC;
+	uint16_t which_light = red;
+
 	while(1)
 	{
-		uint16_t traffic_flow = INITIAL_ADC;
-		uint16_t which_light = red;
-
 		if(xQueuePeek(xFlowQueue_handle, &traffic_flow, 500))
 		{
 			// First step: change the light.
 			if (which_light == green) {
 				which_light = yellow;
+				printf("== Light yellow now.\n");
 			}
 			else if (which_light == yellow) {
 				which_light = red;
+				printf("== Light red now.\n");
 			}
 			else {
 				which_light = green;
+				printf("== Light green now.\n");
 			}
+
+			printf("== Changing the light to %d\n", which_light);
 
 			// Second step: update light state for others.
 			if(xQueueOverwrite(xLightQueue_handle, &which_light))
 			{
+				float proportion = (traffic_flow / 100.0f);
+
 				// Third step: wait a time proportional to flow rate.
 				if (which_light == green) {
-					vTaskDelay(pdMS_TO_TICKS(GREEN_STD_TIME) * (traffic_flow / 100.0f));
+					printf("== Green's time proportion: %d\n", (int)(proportion * 100));
+//					vTaskDelay(pdMS_TO_TICKS(GREEN_STD_TIME) * (traffic_flow / 100.0f));
+					vTaskDelay(pdMS_TO_TICKS(traffic_flow * GREEN_STD_TIME));
 				}
 				else if (which_light == yellow) {
 					vTaskDelay(pdMS_TO_TICKS(YELLOW_STD_TIME));
 				}
 				else {
-					vTaskDelay(pdMS_TO_TICKS(RED_STD_TIME) / (traffic_flow / 100.0f));
+					// Protect against divide by 0 error.
+					if (proportion <= 0) {
+						proportion = 0.1f;
+					}
+
+					// Set up the inverse proportional relationship.
+					float inv_proportion = 1.0f / proportion;
+					printf("== Red's time proportion: %d\n", (int)(inv_proportion * 100));
+					vTaskDelay(pdMS_TO_TICKS((100 - traffic_flow) * RED_STD_TIME));
 				}
 			}
 			else
 			{
-				printf("Light State Failed!\n");
+				printf("== Light State Failed!\n");
 			}
 		}
 	}
@@ -391,13 +463,12 @@ static void System_Display_Task( void *pvParameters )
 {
 	uint16_t light = green;
 	uint16_t should_gen_new_car = 0;
-	uint32_t traffic_pattern = 0x01; // TODO: after tested, change back to 0x01
+	uint32_t traffic_pattern = 0x00;
 	uint8_t pre_light = 0x00;
 	uint32_t post_light = 0x00;
+	uint8_t preserving_mask = 0x00;
+	uint8_t bitmask = 0x80;
 	// Report discussion: the sizes chosen for our bit representation.
-
-	// Example
-	// unsigned char digits[10] = { 0x3f, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
 
 	while(1)
 	{
@@ -419,46 +490,33 @@ static void System_Display_Task( void *pvParameters )
 				GPIO_ResetBits(GPIOC, GPIO_Pin_1);
 				GPIO_SetBits(GPIOC, GPIO_Pin_0);
 			}
+//			printf(">> Light state = %d\n", light);
 		}
 
 		// Consume 1 message from the StreetQueue, which will either be empty or a 1.
 		if(xQueueReceive(xStreetQueue_handle, &should_gen_new_car, 500))
 		{
+//			printf(">> New car noticed! Should gen: %d, should_gen_new_car.\n", should_gen_new_car);
 			if (should_gen_new_car) {
-				pre_light = pre_light | 0x01;
+//				printf(">> New car added\n");
+				pre_light = pre_light | 0x1;
 				should_gen_new_car = 0;
 			}
 		}
 
-		// Shift post_light always and pre_light conditionally
-		post_light = post_light << 1;
-		uint8_t preserving_mask = 0x00;
-		uint8_t bitmask = 0x80;
-		for (int i = 7; i >= 0; i--) {
-			if (pre_light & bitmask == 1) {
-				preserving_mask = preserving_mask | bitmask;
-			}
-			else {
-				break;
-			}
-
-			bitmask = bitmask >> 1;
-		}
-		pre_light = (pre_light << 1) | preserving_mask;
+		// Assemble the traffic pattern
 		traffic_pattern = (post_light << 8) | pre_light;
 
-		/////////////////////////////////
-
-		// Send 0 to Shift Register Reset Pin, which is Active-Low.
+		// Reset for a new pattern to be input.
 		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
 		manualSleep(5000);
 		GPIO_SetBits(GPIOC, GPIO_Pin_8);
 		manualSleep(5000);
-		// This will be an interesting thing to discuss in the report: the decision between sleep() and vTaskDelay VS manual sleep.
-			// sleep() is blocking, whereas vTaskDelay will give resources to other tasks and not guarantee a consistent wait time.
 
-		uint32_t selector_mask = 0x1;
-		for (int i = 21 - 1; i >= 0; i--) {
+		// Loop through traffic pattern to display to LEDs.
+		// Some funky stuff like reading backwards here. (todo: REPORT)
+		uint32_t selector_mask = 0x40000; // 0100 0000 0000 0000 0000
+		for (int i = 19 - 1; i >= 0; i--) {
 			if ((traffic_pattern & selector_mask) == 0) {
 				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
 			}
@@ -471,8 +529,41 @@ static void System_Display_Task( void *pvParameters )
 			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
 			manualSleep(100);
 
-			selector_mask = selector_mask << 1;
+			selector_mask = selector_mask >> 1;
 		}
+
+		// We always shift post_light.
+		post_light = post_light << 1;
+
+		// This logic covers stopping traffic.
+		preserving_mask = 0x00;
+		if (light == red || light == yellow) {
+			bitmask = 0x80; // 1000 0000, the 1 shifts to the right to select bits
+
+			// Loop through and build a preserving mask out of the most significant 1s.
+			for (int i = 7; i >= 0; i--) {
+				if ((pre_light & bitmask) != 0) {
+					preserving_mask = preserving_mask | bitmask;
+				}
+				else {
+					break;
+				}
+
+				bitmask = bitmask >> 1;
+			}
+		}
+		else {
+			// If it is green, we need to check if we will lose a 1.
+			if ((pre_light & 0x80) != 0) {
+				// If so, we introduce a new 1 into post_light.
+				post_light = post_light | 0x1;
+			}
+		}
+
+		// Shift the pre_light and use the preserving mask to restore any lost 1s.
+		pre_light = (pre_light << 1) | preserving_mask;
+
+//		manualSleep(5000000);
 
 		vTaskDelay(500);
 	}
@@ -581,7 +672,6 @@ static void GPIO_Setup( void ) {
 	//GPIO_SetBits(GPIOC, 0x06); // Set GPIOC Pin 6 (Data)?
 }
 
-// TODO: Our ADC seems a little wack - major changes from high to low resulted in 362 turning into a 360
 static void ADC_Setup ( void ) {
 	printf("ADC Start\n");
 	fflush(stdout);
@@ -600,15 +690,5 @@ static void ADC_Setup ( void ) {
 	ADC_Cmd(ADC1, ENABLE);
 	// ADC Channel Config - Slides say to try different sample times
 	// Also confirm this is the correct channel?
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_3Cycles);
-	// ADC Conversion
-	ADC_SoftwareStartConv(ADC1);
-
-	while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
-		// Once EOC set read data
-		;
-	}
-	uint16_t adcval = ADC_GetConversionValue(ADC1);
-	printf("ADC Value: %d\n", adcval);
-	fflush(stdout);
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_3Cycles);
 }
