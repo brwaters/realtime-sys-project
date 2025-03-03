@@ -167,11 +167,12 @@ functionality.
 // Time for standard light length (in miliseconds):
 #define GREEN_STD_TIME 200UL // 0.2 seconds
 #define YELLOW_STD_TIME 3000UL // 3 seconds
-#define RED_STD_TIME 200UL // 0.2 seconds
+#define RED_STD_TIME 100UL // 0.1 seconds
 // Somewhat unintuitively, despite std_time being less than yellow, green and red will be boosted by ADC's value, which will end up max 10 seconds
 
-#define DICE_CEIL 80
-#define DICE_FLOOR 10
+#define ADC_CEIL 80
+#define ADC_FLOOR 10
+#define DICE_ADJUSTMENT 15
 
 /*
  * TODO: Implement this function for any hardware specific clock configuration
@@ -192,7 +193,8 @@ static void Traffic_Generator_Task( void *pvParameters );
 static void Traffic_Light_State_Task( void *pvParameters );
 static void System_Display_Task( void *pvParameters );
 
-// TODO: check if these should be 0 1 2 or all 0s
+// Reserve a space in memory for the queue handles. Each handle is just something
+// 		FreeRTOS uses to reference the queues.
 xQueueHandle xStreetQueue_handle = 0;
 xQueueHandle xFlowQueue_handle = 0;
 xQueueHandle xLightQueue_handle = 0;
@@ -222,95 +224,12 @@ int main( void )
 	vQueueAddToRegistry( xFlowQueue_handle, "FlowQueue" );
 
 	xTaskCreate( Traffic_Flow_Task, "Flow", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( Traffic_Light_State_Task, "Light_State", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
+	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( Traffic_Light_State_Task, "Light_State", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 
 	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
-
-	//////////////////////////
-
-//	uint32_t traffic_pattern = 0x00000;
-//	uint8_t pre_light = 0x00; // 0101 0000
-//	uint32_t post_light = 0x00;
-//
-//	uint8_t preserving_mask = 0x00;
-//	uint8_t bitmask = 0x80;
-//
-//	int debug = 1;
-
-//	while(1) {
-
-//		if (debug) {
-//			pre_light = pre_light | 0x1;
-//			debug = 0;
-//		}
-//		else {
-//			debug = 1;
-//		}
-//
-//		traffic_pattern = (post_light << 8) | pre_light;
-//
-//		/////////////////////////////////////
-//
-//		// Reset for a new pattern to be input.
-//		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
-//		manualSleep(5000);
-//		GPIO_SetBits(GPIOC, GPIO_Pin_8);
-//		manualSleep(5000);
-//
-////		uint32_t pattern = 0x55555;
-////		uint32_t pattern = 0xFFFFF;
-//		uint32_t selector_mask = 0x40000; // 0100 0000 0000 0000 0000
-//		for (int i = 19 - 1; i >= 0; i--) {
-//			if ((traffic_pattern & selector_mask) == 0) {
-//				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
-//			}
-//			else {
-//				GPIO_SetBits(GPIOC, GPIO_Pin_6);
-//			}
-//
-//			GPIO_SetBits(GPIOC, GPIO_Pin_7);
-//			manualSleep(100);
-//			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
-//			manualSleep(100);
-//
-//			selector_mask = selector_mask >> 1;
-//		}
-//
-//
-//
-//		/////////////////////////////////////
-//
-////		preserving_mask = 0x00;
-////		bitmask = 0x80; // 1000 0000, the 1 shifts to the right to select bits
-////
-////		for (int i = 7; i >= 0; i--) {
-////			if ((pre_light & bitmask) != 0) {
-////				preserving_mask = preserving_mask | bitmask;
-////			}
-////			else {
-////				break;
-////			}
-////
-////			bitmask = bitmask >> 1;
-////		}
-//
-//		post_light = post_light << 1;
-//
-//		// TODO: when ported into task, use this to encapuslate the if to add a car to  and preserving mask
-////		if (state == red || state == yellow) {
-////
-////		}
-//
-//		if ((pre_light & 0x80) != 0) {
-//			post_light = post_light | 0x1;
-//		}
-//		pre_light = (pre_light << 1) | preserving_mask;
-//
-//		manualSleep(5000000);
-//	}
 
 	return 0;
 }
@@ -350,10 +269,10 @@ static void Traffic_Flow_Task( void *pvParameters )
 			// We just do this to avoid a divide by 0 elsewhere.
 			// As it turns out, our initial minimum level as too powerful! Resulting in no vehicles appearing (as there was 1% chance).
 			// So we are raising the floor so that we can guarantee at least SOME cars appear.
-			if (adc_val <= DICE_FLOOR) {
-				adc_val = 10;
+			if (adc_val <= ADC_FLOOR) {
+				adc_val = ADC_FLOOR;
 			}
-			printf("$$ Normed ADC Reading: %d\n", adc_val);
+//			printf("$$ Normed ADC Reading: %d\n", adc_val);
 		}
 		else
 		{
@@ -375,14 +294,13 @@ static void Traffic_Generator_Task( void *pvParameters )
 		{
 			// Roll a d100 dice; if the result is LESS then the traffic flow (which is 1-100), then we spawn a new vehicle.
 			int result = rand() % 100;
-			printf("++ Dice Result: %d\n", result);
+//			printf("++ Dice Result: %d, Traffic Read: %d\n", result + 15, traffic_flow);
 
-
-			if (result < traffic_flow) {
+			if (result + DICE_ADJUSTMENT  < traffic_flow) {
 				// BE AWARE: should_gen should ONLY EVER BE a 1 here:
 				if(xQueueSend(xStreetQueue_handle, &should_gen_flag, 1000))
 				{
-					printf("++ Traffic Sent.\n");
+//					printf("++ Traffic Sent.\n");
 					// Do... nothing? xQueueSend does everything we need to.
 				}
 				else
@@ -409,42 +327,26 @@ static void Traffic_Light_State_Task( void *pvParameters )
 			// First step: change the light.
 			if (which_light == green) {
 				which_light = yellow;
-				printf("== Light yellow now.\n");
 			}
 			else if (which_light == yellow) {
 				which_light = red;
-				printf("== Light red now.\n");
 			}
 			else {
 				which_light = green;
-				printf("== Light green now.\n");
 			}
-
-			printf("== Changing the light to %d\n", which_light);
 
 			// Second step: update light state for others.
 			if(xQueueOverwrite(xLightQueue_handle, &which_light))
 			{
-				float proportion = (traffic_flow / 100.0f);
-
 				// Third step: wait a time proportional to flow rate.
 				if (which_light == green) {
-					printf("== Green's time proportion: %d\n", (int)(proportion * 100));
-//					vTaskDelay(pdMS_TO_TICKS(GREEN_STD_TIME) * (traffic_flow / 100.0f));
 					vTaskDelay(pdMS_TO_TICKS(traffic_flow * GREEN_STD_TIME));
 				}
 				else if (which_light == yellow) {
 					vTaskDelay(pdMS_TO_TICKS(YELLOW_STD_TIME));
 				}
 				else {
-					// Protect against divide by 0 error.
-					if (proportion <= 0) {
-						proportion = 0.1f;
-					}
-
 					// Set up the inverse proportional relationship.
-					float inv_proportion = 1.0f / proportion;
-					printf("== Red's time proportion: %d\n", (int)(inv_proportion * 100));
 					vTaskDelay(pdMS_TO_TICKS((100 - traffic_flow) * RED_STD_TIME));
 				}
 			}
@@ -490,15 +392,12 @@ static void System_Display_Task( void *pvParameters )
 				GPIO_ResetBits(GPIOC, GPIO_Pin_1);
 				GPIO_SetBits(GPIOC, GPIO_Pin_0);
 			}
-//			printf(">> Light state = %d\n", light);
 		}
 
 		// Consume 1 message from the StreetQueue, which will either be empty or a 1.
 		if(xQueueReceive(xStreetQueue_handle, &should_gen_new_car, 500))
 		{
-//			printf(">> New car noticed! Should gen: %d, should_gen_new_car.\n", should_gen_new_car);
 			if (should_gen_new_car) {
-//				printf(">> New car added\n");
 				pre_light = pre_light | 0x1;
 				should_gen_new_car = 0;
 			}
@@ -509,9 +408,9 @@ static void System_Display_Task( void *pvParameters )
 
 		// Reset for a new pattern to be input.
 		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
-		manualSleep(5000);
+		manualSleep(1000);
 		GPIO_SetBits(GPIOC, GPIO_Pin_8);
-		manualSleep(5000);
+		manualSleep(1000);
 
 		// Loop through traffic pattern to display to LEDs.
 		// Some funky stuff like reading backwards here. (todo: REPORT)
@@ -562,8 +461,6 @@ static void System_Display_Task( void *pvParameters )
 
 		// Shift the pre_light and use the preserving mask to restore any lost 1s.
 		pre_light = (pre_light << 1) | preserving_mask;
-
-//		manualSleep(5000000);
 
 		vTaskDelay(500);
 	}
