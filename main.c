@@ -145,13 +145,7 @@ functionality.
 #include "../FreeRTOS_Source/include/semphr.h"
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
-/* GPIO includes. */
-//#include "stm32f4xx_gpio.c"
-//#include "stm32f4xx_adc.c"
-//#include "../Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_gpio.c"
-//#include "../Libraries/STM32F4xx_StdPeriph_Driver/src/stm32f4xx_adc.c"
 
-//#include <time.h>
 #include <stdlib.h>
 
 /*-----------------------------------------------------------*/
@@ -174,20 +168,14 @@ functionality.
 #define ADC_FLOOR 10
 #define DICE_ADJUSTMENT 15
 
-/*
- * TODO: Implement this function for any hardware specific clock configuration
- * that was not already performed before main() was called.
- */
+// Hardware setup function definitions
 static void prvSetupHardware( void );
 static void GPIO_Setup( void );
 static void ADC_Setup ( void );
 
 static void manualSleep(int time);
 
-/*
- * The queue send and receive tasks as described in the comments at the top of
- * this file.
- */
+// Task function definitions
 static void Traffic_Flow_Task( void *pvParameters );
 static void Traffic_Generator_Task( void *pvParameters );
 static void Traffic_Light_State_Task( void *pvParameters );
@@ -203,13 +191,10 @@ xQueueHandle xLightQueue_handle = 0;
 
 int main( void )
 {
-	/* Configure the system ready to run the demo.  The clock configuration
-	can be done here if it was not done before main() was called. */
+	// Call the hardware initilization functions.
 	prvSetupHardware();
 
-	/* Create the queue used by the queue send and queue receive tasks.
-	http://www.freertos.org/a00116.html */
-	// TODO: this could be uint8_t...
+	// Create the queue used by our tasks.
 	xStreetQueue_handle = xQueueCreate(8, sizeof( uint16_t ) );
 
 	// Create a queue to hold active red/yellow/green status.
@@ -218,17 +203,18 @@ int main( void )
 	// Create a queue to hold the current normalized ADC flow value.
 	xFlowQueue_handle = xQueueCreate(1, sizeof( uint16_t ));
 
-	/* Add to the registry, for the benefit of kernel aware debugging. */
+	// Add each queue to the registry, for kernel aware debugging.
 	vQueueAddToRegistry( xStreetQueue_handle, "StreetQueue" );
 	vQueueAddToRegistry( xLightQueue_handle, "LightQueue" );
 	vQueueAddToRegistry( xFlowQueue_handle, "FlowQueue" );
 
+	// Create each infividual task, providing a relative priority to each.
 	xTaskCreate( Traffic_Flow_Task, "Flow", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( Traffic_Light_State_Task, "Light_State", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
+	xTaskCreate( Traffic_Generator_Task, "Generator", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
+	xTaskCreate( Traffic_Light_State_Task, "Light_State", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
+	xTaskCreate( System_Display_Task, "Sys_Display", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 
-	/* Start the tasks and timer running. */
+	// Start the tasks and timer running.
 	vTaskStartScheduler();
 
 	return 0;
@@ -237,6 +223,7 @@ int main( void )
 
 /*-----------------------------------------------------------*/
 
+// This task is responsible for reading from the ADC to get the value of the potentiometer's resistence.
 static void Traffic_Flow_Task( void *pvParameters )
 {
 	uint16_t adc_val = INITIAL_ADC;
@@ -246,7 +233,7 @@ static void Traffic_Flow_Task( void *pvParameters )
 	{
 		if(xQueueOverwrite(xFlowQueue_handle, &adc_val))
 		{
-//			printf("$$ Overwrote ADC flow to %d\n", adc_val);
+			// printf("$$ Overwrote ADC flow to %d\n", adc_val);
 			vTaskDelay(500);
 
 			// Begin reading a value from the ADC.
@@ -258,12 +245,13 @@ static void Traffic_Flow_Task( void *pvParameters )
 			unnorm_val = ADC_GetConversionValue(ADC1);
 
 			// Normalize the value so that it lands between 0 and 100.
-//			printf("$$ What is our ADC reading? %d\n", unnorm_val);
-			adc_val = 100 * (unnorm_val / 65520.0f); // Normalization value determined by observed maximum reading from potentiometer.
+			// printf("$$ What is our ADC reading? %d\n", unnorm_val);
+			adc_val = 100 * (unnorm_val / 65520.0f); 
+			// The normalization constant determined by observed maximum reading from potentiometer.
 
-			// We flip the value so that it is representative of resistance
+			// We flip the value so that it is representative of resistance.
 			adc_val = 100 - adc_val;
-//			printf("$$ Normed ADC Reading: %d\n", adc_val);
+			// printf("$$ Normed ADC Reading: %d\n", adc_val);
 			// Something to note here for report discussion: putting the vTaskDelay before or after the process.
 
 			// We just do this to avoid a divide by 0 elsewhere.
@@ -272,7 +260,7 @@ static void Traffic_Flow_Task( void *pvParameters )
 			if (adc_val <= ADC_FLOOR) {
 				adc_val = ADC_FLOOR;
 			}
-//			printf("$$ Normed ADC Reading: %d\n", adc_val);
+			// printf("$$ Normed ADC Reading: %d\n", adc_val);
 		}
 		else
 		{
@@ -283,10 +271,11 @@ static void Traffic_Flow_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
+// This task is responsible for determining whether a vehicle should be generated based off of current traffic flow.
 static void Traffic_Generator_Task( void *pvParameters )
 {
 	uint16_t traffic_flow = INITIAL_ADC;
-	uint16_t should_gen_flag = 1; // TODO: this could be uint8_t...
+	uint16_t should_gen_flag = 1; // This could potentially be uint8_t.
 
 	while(1)
 	{
@@ -294,14 +283,14 @@ static void Traffic_Generator_Task( void *pvParameters )
 		{
 			// Roll a d100 dice; if the result is LESS then the traffic flow (which is 1-100), then we spawn a new vehicle.
 			int result = rand() % 100;
-//			printf("++ Dice Result: %d, Traffic Read: %d\n", result + 15, traffic_flow);
+			// printf("++ Dice Result: %d, Traffic Read: %d\n", result + 15, traffic_flow);
 
 			if (result + DICE_ADJUSTMENT  < traffic_flow) {
 				// BE AWARE: should_gen should ONLY EVER BE a 1 here:
 				if(xQueueSend(xStreetQueue_handle, &should_gen_flag, 1000))
 				{
-//					printf("++ Traffic Sent.\n");
-					// Do... nothing? xQueueSend does everything we need to.
+					// printf("++ Traffic Sent.\n");
+					// Do nothing. xQueueSend does everything we need to.
 				}
 				else
 				{
@@ -315,6 +304,8 @@ static void Traffic_Generator_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
+// This task is responsible for rotating through the current displayed traffic light (green, yellow, or red) and maintaining 
+// 		that light for a period proportional to the traffic flow.
 static void Traffic_Light_State_Task( void *pvParameters )
 {
 	uint16_t traffic_flow = INITIAL_ADC;
@@ -340,13 +331,16 @@ static void Traffic_Light_State_Task( void *pvParameters )
 			{
 				// Third step: wait a time proportional to flow rate.
 				if (which_light == green) {
+					// The traffic flow is a normalized value between 1-100. By multiplying it with teh standard
+					//		green light time, we can wait an amount of miliseconds dependent on the traffic flow.
 					vTaskDelay(pdMS_TO_TICKS(traffic_flow * GREEN_STD_TIME));
 				}
 				else if (which_light == yellow) {
+					// Yellow light waits a constant time, so no need to interact with the traffic flow.
 					vTaskDelay(pdMS_TO_TICKS(YELLOW_STD_TIME));
 				}
 				else {
-					// Set up the inverse proportional relationship.
+					// Set up the inverse proportional relationship using traffic flow.
 					vTaskDelay(pdMS_TO_TICKS((100 - traffic_flow) * RED_STD_TIME));
 				}
 			}
@@ -360,7 +354,7 @@ static void Traffic_Light_State_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
-// IDEA: we could probably have this run in main(), and then save our task scheduler one task.
+// This task handles outputing bits to all hardware peripherals according to values read from the three queues.
 static void System_Display_Task( void *pvParameters )
 {
 	uint16_t light = green;
@@ -370,7 +364,6 @@ static void System_Display_Task( void *pvParameters )
 	uint32_t post_light = 0x00;
 	uint8_t preserving_mask = 0x00;
 	uint8_t bitmask = 0x80;
-	// Report discussion: the sizes chosen for our bit representation.
 
 	while(1)
 	{
@@ -406,16 +399,19 @@ static void System_Display_Task( void *pvParameters )
 		// Assemble the traffic pattern
 		traffic_pattern = (post_light << 8) | pre_light;
 
-		// Reset for a new pattern to be input.
+		// Reset for a new pattern to be input. Manual sleep is required to give the GPIO enough time to
+		// 		fully reset and set the one pin.
 		GPIO_ResetBits(GPIOC, GPIO_Pin_8);
 		manualSleep(1000);
 		GPIO_SetBits(GPIOC, GPIO_Pin_8);
 		manualSleep(1000);
 
-		// Loop through traffic pattern to display to LEDs.
-		// Some funky stuff like reading backwards here. (todo: REPORT)
+		// Loop through traffic pattern to display to LEDs by selecting individual bits with the help of a selector mask.
+		// Some funky stuff like reading backwards here, as our system was right-endian yet 
+		// 		vehicles needed to move left to right. This is further discussed in the report discussion.
 		uint32_t selector_mask = 0x40000; // 0100 0000 0000 0000 0000
 		for (int i = 19 - 1; i >= 0; i--) {
+			// Determine whether the current bit is a 1 or 0, and output to the shift register data pin accordingly.
 			if ((traffic_pattern & selector_mask) == 0) {
 				GPIO_ResetBits(GPIOC, GPIO_Pin_6);
 			}
@@ -423,31 +419,40 @@ static void System_Display_Task( void *pvParameters )
 				GPIO_SetBits(GPIOC, GPIO_Pin_6);
 			}
 
+			// After determining whether port 6 should output 0 or 1, we need to communicate to the shift registers
+			// 		by pulsing the clock pin. This shifts the output by one down the daisy chain.
 			GPIO_SetBits(GPIOC, GPIO_Pin_7);
 			manualSleep(100);
 			GPIO_ResetBits(GPIOC, GPIO_Pin_7);
 			manualSleep(100);
 
+			// Advance the selector mask by 1 to select the next bit in the traffic pattern.
 			selector_mask = selector_mask >> 1;
 		}
 
-		// We always shift post_light.
+		// We always shift post_light, as the vehicles past the intersection never get stopped.
 		post_light = post_light << 1;
 
-		// This logic covers stopping traffic.
+		// This logic covers stopping traffic. It does so by identifying the most significant 1s which needed to be
+		// 		preserved, as when you bitshift the pre_light, 1s may be lost.
+		// The preserving mask begins equal to 0, as the vehicles which must be preserved have yet to be identified.
 		preserving_mask = 0x00;
 		if (light == red || light == yellow) {
 			bitmask = 0x80; // 1000 0000, the 1 shifts to the right to select bits
 
 			// Loop through and build a preserving mask out of the most significant 1s.
 			for (int i = 7; i >= 0; i--) {
+				// If the current bit is a 1...
 				if ((pre_light & bitmask) != 0) {
+					// Assemble the preserving mask by introducing a 1 into the same position.
 					preserving_mask = preserving_mask | bitmask;
 				}
 				else {
+					// Otherwise, a 0 has been encountered. This means we no longer need to update the preserving mask.
 					break;
 				}
 
+				// Shift the bitmask to select the next bit in pre_light.
 				bitmask = bitmask >> 1;
 			}
 		}
@@ -462,15 +467,18 @@ static void System_Display_Task( void *pvParameters )
 		// Shift the pre_light and use the preserving mask to restore any lost 1s.
 		pre_light = (pre_light << 1) | preserving_mask;
 
+		// Wait a contant time before updating the system display again.
 		vTaskDelay(500);
 	}
 }
 
 /*-----------------------------------------------------------*/
 
+// A quick and dirty method for manually delaying our system so that the peripherals have time
+//		to catch up to our way faster CPU.
 static void manualSleep(int time) {
 	for (int i = time; i > 0; i--) {
-		// Wait
+		// Wait!
 	}
 }
 
@@ -527,15 +535,12 @@ volatile size_t xFreeStackSpace;
 }
 /*-----------------------------------------------------------*/
 
+// This is a helper function which just groups together our two peripheral setup functions.
 static void prvSetupHardware( void )
 {
 	printf("Hardware being setup.\n");
-	/* Ensure all priority bits are assigned as preemption priority bits.
-	http://www.freertos.org/RTOS-Cortex-M3-M4.html */
 	NVIC_SetPriorityGrouping( 0 );
 
-	/* TODO: Setup the clocks, etc. here, if they were not configured before
-	main() was called. */
 	GPIO_Setup();
 	ADC_Setup();
 
@@ -545,47 +550,50 @@ static void prvSetupHardware( void )
 // one for each Big Boi LEDs might need different mode (GPIO to out)
 // pino 0 1 2 3
 
+// This function sets the correct config states for the GPIO and each pin we use.
 static void GPIO_Setup( void ) {
 	// Enable Clock
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+
 	// GPIO_Init
-	// Must create an InitStruct to set characteristics of GPIOC, then pass
-	// into GPIO_Init function
+	// Must create an InitStruct to set characteristics of GPIOC, then pass into GPIO_Init function.
 	GPIO_InitTypeDef GPIO_InitStruct;
 
-    // Setup for PC0, PC1, PC2 for Traffic Lights (Red, Amber, Green)PC6, 7, 8 Shift Registers
+    // Setup for PC0, PC1, PC2 for Traffic Lights (Red, Amber, Green)PC6, 7, 8 Shift Registers.
 	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_6 | GPIO_Pin_7 | GPIO_Pin_8;
-	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_OUT; // Alternate Function // out is also an option
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_OUT; // Alternate Function, but out is also an option
 	GPIO_InitStruct.GPIO_OType = GPIO_OType_PP; // Push-Pull
 	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL; // Pull Down? // no pull is also an option
-	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz; // Highest? // 50 and 25hz also work // Faster the clock is, drives the signal harder, draws more current, more spiking and ringing which poses problems
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz; // Faster the clock is, drives the signal harder, draws more current, more spiking and ringing which poses problems.
 	GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+	// Pin 3 needs special settings as it connects to the potentiometer via the ADC.
 	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_3;
-	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AN;         // Analog mode for ADC
-	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL;       // No pull-up or pull-down for analog
+	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AN; // Analog mode for ADC
+	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL; // No pull-up or pull-down for analog
 	GPIO_Init(GPIOC, &GPIO_InitStruct);
-	// Set or Reset Bits
-	//GPIO_SetBits(GPIOC, 0x06); // Set GPIOC Pin 6 (Data)?
 }
 
+// This function similarly configures the ADC.
 static void ADC_Setup ( void ) {
-	printf("ADC Start\n");
-	fflush(stdout);
 	// Enable Clock
 	RCC_APB2PeriphClockCmd(RCC_APB2ENR_ADC1EN, ENABLE);
+
 	// ADC Init Configuration
 	ADC_InitTypeDef ADC_InitStruct;
 	ADC_InitStruct.ADC_ContinuousConvMode = DISABLE;
+
 	// We should prefer a right-aligned endian-ness
 	ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
 	ADC_InitStruct.ADC_Resolution = ADC_Resolution_12b;
 	ADC_InitStruct.ADC_ExternalTrigConv = DISABLE;
 
+	// Initialize the ADC using the init structure.
 	ADC_Init(ADC1, &ADC_InitStruct);
+
 	// ADC Enable
 	ADC_Cmd(ADC1, ENABLE);
+	
 	// ADC Channel Config - Slides say to try different sample times
-	// Also confirm this is the correct channel?
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_3Cycles);
 }
