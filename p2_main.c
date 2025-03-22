@@ -162,6 +162,12 @@ functionality.
 
 #define HYPER_PERIOD 1500
 
+// We are precalculating the maximum size any of the dd task list to limit the size of our task list queues.
+#define NUM_DD_TASKS_0 HYPER_PERIOD / DD_TASK_0_PERIOD
+#define NUM_DD_TASKS_1 HYPER_PERIOD / DD_TASK_1_PERIOD
+#define NUM_DD_TASKS_2 HYPER_PERIOD / DD_TASK_2_PERIOD
+#define MAX_LIST_SIZE NUM_DD_TASKS_0 + NUM_DD_TASKS_1 + NUM_DD_TASKS_2
+
 #define TICK_TO_MS_RATIO 1000/configTICK_RATE_HZ
 
 typedef enum dd_task_type {
@@ -192,6 +198,20 @@ typedef struct dd_task_list_node {
 	struct dd_task_list_node* next_task;
 } DD_Task_List_Node;
 
+typedef enum event_type {
+	RELEASE,
+	COMPLETE,
+	GET_ACTIVE,
+	GET_COMPLETED,
+	GET_OVERDUE
+} Event_Type;
+
+// Any getter event will have the dd_task = NULL, and the handling logic will not attempt to access the NULL dd_task.
+typedef struct scheduler_event {
+	Event_Type event_type;
+	DD_Task dd_task;
+} Scheduler_Event;
+
 /*-----------------------------------------------------------*/
 
 // Hardware setup function definitions
@@ -201,22 +221,25 @@ static void ADC_Setup ( void );
 
 // Helper functions
 static void manualSleep( int time );
-void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param0, DD_Task_Generator_Parameters* param1, DD_Task_Generator_Parameters* param2 );
+void DD_Task_Generator_Setup(
+	DD_Task_Generator_Parameters* param_pointer_0,
+	DD_Task_Generator_Parameters* param_pointer_1,
+	DD_Task_Generator_Parameters* param_pointer_2
+);
 
-//void create_dd_task( TaskHandle_t t_handle,
-//	task_type type,
-//	uint32_t task_id,
-//	uint32_t absolute_deadline,
-//);
+//void release_dd_task(DD_Task dd_task);
+//void complete_dd_task(uint32_t task_id);
+void handle_dd_task( Event_Type event_type, DD_Task dd_task );
 
-void delete_dd_task(uint32_t task_id);
-DD_Task_List_Node** get_active_dd_task_list(void);
-DD_Task_List_Node** get_complete_dd_task_list(void);
-DD_Task_List_Node** get_overdue_dd_task_list(void);
+DD_Task_List_Node** get_active_dd_task_list( void );
+DD_Task_List_Node** get_complete_dd_task_list( void );
+DD_Task_List_Node** get_overdue_dd_task_list( void );
 
 // Task function definitions
 static void DDT_Generator_Task( void *pvParameters );
 static void User_Defined_Task( void *pvParameters );
+
+/*-----------------------------------------------------------*/
 
 // Reserve a space in memory for the queue handles. Each handle is just something
 // 		FreeRTOS uses to reference the queues.
@@ -232,19 +255,28 @@ int main( void )
 	// Call the hardware initialization functions.
 	prvSetupHardware();
 
-	// Create the queue used by our tasks.
-	event_queue_handle = xQueueCreate(8, sizeof( uint16_t ) );
+	// Create the queues used by our tasks.
+	event_queue_handle = xQueueCreate( 2*(MAX_LIST_SIZE), sizeof(Scheduler_Event) ); // Decently large buffer queue for task communication
+	active_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
+	complete_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
+	overdue_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
 
 	// Add each queue to the registry, for kernel aware debugging.
-//	vQueueAddToRegistry( xStreetQueue_handle, "StreetQueue" );
+	vQueueAddToRegistry( event_queue_handle, "EventQueue" );
+	vQueueAddToRegistry( active_list_queue_handle, "ActiveListQueue" );
+	vQueueAddToRegistry( complete_list_queue_handle, "CompleteListQueue" );
+	vQueueAddToRegistry( overdue_list_queue_handle, "OverdueListQueue" );
 
-	// REPORT: This is a workaround to preserve memory in scope
-	DD_Task_Generator_Parameters params_0;
-	DD_Task_Generator_Parameters params_1;
-	DD_Task_Generator_Parameters params_2;
+	// REPORT: This is a workaround to preserve memory in scope, which didn't actually end up fixing the problem
+	// Instead, malloc did. However, TODO - move this into the generator setup method.
+	DD_Task_Generator_Parameters* params_0_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));
+	DD_Task_Generator_Parameters* params_1_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));;
+	DD_Task_Generator_Parameters* params_2_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));;
+
+//	printf("Malloc'd pointer address: %d\n", (int) params_0_buffer);
 
 	// Call the helper function to create the dd task generators.
-	DD_Task_Generator_Setup(&params_0, &params_1, &params_2);
+	DD_Task_Generator_Setup(params_0_buffer, params_1_buffer, params_2_buffer);
 
 	// Start the tasks and timer running.
 	vTaskStartScheduler();
@@ -256,44 +288,41 @@ int main( void )
 	return 0;
 }
 
-// REPORT: definitely somthine
+// REPORT: definitely something
 void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param_pointer_0, DD_Task_Generator_Parameters* param_pointer_1, DD_Task_Generator_Parameters* param_pointer_2 ) {
-	TaskHandle_t user_defined_handle_0 = 0;
-	TaskHandle_t user_defined_handle_1 = 0;
-	TaskHandle_t user_defined_handle_2 = 0;
+	TaskHandle_t user_defined_handle_0;
+	TaskHandle_t user_defined_handle_1;
+	TaskHandle_t user_defined_handle_2;
 
 	xTaskCreate( User_Defined_Task, "User_Defined_Task_0", configMINIMAL_STACK_SIZE, NULL, 2, &user_defined_handle_0 );
 	xTaskCreate( User_Defined_Task, "User_Defined_Task_1", configMINIMAL_STACK_SIZE, NULL, 2, &user_defined_handle_1 );
 	xTaskCreate( User_Defined_Task, "User_Defined_Task_2", configMINIMAL_STACK_SIZE, NULL, 2, &user_defined_handle_2 );
 
-	DD_Task_Generator_Parameters params_0 = {22, PERIODIC, user_defined_handle_0, DD_TASK_0_EX_TIME, DD_TASK_0_PERIOD};
+	DD_Task_Generator_Parameters params_0 = {0, PERIODIC, user_defined_handle_0, DD_TASK_0_EX_TIME, DD_TASK_0_PERIOD};
 	DD_Task_Generator_Parameters params_1 = {1, PERIODIC, user_defined_handle_1, DD_TASK_1_EX_TIME, DD_TASK_1_PERIOD};
 	DD_Task_Generator_Parameters params_2 = {2, PERIODIC, user_defined_handle_2, DD_TASK_2_EX_TIME, DD_TASK_2_PERIOD};
-
-	// TODO: pvPortMalloc to solve memory problems!
-	// or just regular malloc since we're in main rn.
 
 	*param_pointer_0 = params_0;
 	*param_pointer_1 = params_1; // (DD_Task_Generator_Parameters) {1, PERIODIC, user_defined_handle_1, DD_TASK_1_EX_TIME, DD_TASK_1_PERIOD};
 	*param_pointer_2 = params_2; // (DD_Task_Generator_Parameters) {2, PERIODIC, user_defined_handle_2, DD_TASK_2_EX_TIME, DD_TASK_2_PERIOD};
 
-	pvPortMalloc();
-
-	printf("ddress in Setup(): %d\n", (int)param_pointer_0);
-
-	printf("Check if it says 22 (gen id): %d\n", param_pointer_0->generator_id);
-	printf("Check if it says 0 (type): %d\n", param_pointer_0->task_type);
-	printf("Check if it says big number (handle): %d\n", param_pointer_0->f_task_handle);
-	printf("Check if it says 95 (execut): %d\n", param_pointer_0->execution_time);
-	printf("Check if it says 500 (period): %d\n", param_pointer_0->period);
+//	printf("Address in Setup(): %d\n", (int)param_pointer_0);
+//	printf("Check if it says 22 (gen id): %d\n", param_pointer_0->generator_id);
+//	printf("Check if it says 0 (type): %d\n", param_pointer_0->task_type);
+//	printf("Check if it says big number (handle): %d\n", param_pointer_0->f_task_handle);
+//	printf("Check if it says 95 (execut): %d\n", param_pointer_0->execution_time);
+//	printf("Check if it says 500 (period): %d\n", param_pointer_0->period);
 
 	// Create each individual task, providing a relative priority to each.
 	// The first null is a the task params; they must be any value w/ pointer type casted to null, later
 	//		in the task the pointer must be type casted BACK to its original type for proper referencing.
-	//xTaskCreate( DDT_Generator_Task, "Generator_0", configMINIMAL_STACK_SIZE, (void*) param_pointer_0, 2, NULL );
-	xTaskCreate( DDT_Generator_Task, "Generator_0", configMINIMAL_STACK_SIZE, (void*) &params_0, 2, NULL );
-//	xTaskCreate( DDT_Generator_Task, "Generator_1", configMINIMAL_STACK_SIZE, &params_1, 2, NULL );
-//	xTaskCreate( DDT_Generator_Task, "Generator_2", configMINIMAL_STACK_SIZE, &params_2, 2, NULL );
+	xTaskCreate( DDT_Generator_Task, "Generator_0", configMINIMAL_STACK_SIZE, (void*) param_pointer_0, 2, NULL );
+	xTaskCreate( DDT_Generator_Task, "Generator_1", configMINIMAL_STACK_SIZE, (void*) param_pointer_1, 2, NULL );
+	xTaskCreate( DDT_Generator_Task, "Generator_2", configMINIMAL_STACK_SIZE, (void*) param_pointer_2, 2, NULL );
+
+	// TODO: why is attempting to free this pointer throwing a SIGINT?
+//	manualSleep(9999);
+//	vPortFree(param_pointer_0);
 }
 
 
@@ -301,23 +330,21 @@ void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param_pointer_0, DD_
 
 static void DDT_Generator_Task( void *pvParameters )
 {
-	printf("\nVoid * Address in Task(): %d\n", (int)pvParameters);
 
 	DD_Task_Generator_Parameters* params;
 	params = (DD_Task_Generator_Parameters*) pvParameters;
 
-	printf("Check if it says 22 (gen id): %d\n", params->generator_id);
-	printf("Check if it says 0 (type): %d\n", params->task_type);
-	printf("Check if it says big number (handle): %d\n", params->f_task_handle);
-	printf("Check if it says 95 (execut): %d\n", params->execution_time);
-	printf("Check if it says 500 (period): %d\n", params->period);
-
-	printf("Params Address in Task(): %d\n", (int)params);
+//	printf("\nParams Address in Task(): %d\n", (int)params);
+//	printf("Check if it says 22 (gen id): %d\n", params->generator_id);
+//	printf("Check if it says 0 (type): %d\n", params->task_type);
+//	printf("Check if it says big number (handle): %d\n", params->f_task_handle);
+//	printf("Check if it says 95 (execut): %d\n", params->execution_time);
+//	printf("Check if it says 500 (period): %d\n", params->period);
 
 	uint8_t generator_id = params->generator_id; //TODO: mess with
 	TaskHandle_t parent_f_task_handle = params->f_task_handle;
 	DD_Task_Type task_type = params->task_type;
-	int execution_time = params->execution_time;
+	int execution_time = params->execution_time; // TODO: remove this if we end up reusing User Gen f_tasks
 	int period = params->period;
 
 	int dd_task_id = 0;
@@ -330,7 +357,7 @@ static void DDT_Generator_Task( void *pvParameters )
 		// TODO: do that
 		// Get the time for the DD Task's creation.
 //		uint32_t arrival_time = xTaskGetTickCount() * TICK_TO_MS_RATIO; // Ticks must be converted to MS // TODO: we could do this conversion in the monitor if we felt like it
-
+// WE COULD: generate a new f task and pass the handle to new dd task given us access to
 		DD_Task new_dd_task = {
 			parent_f_task_handle, // TaskHandle_t t_handle
 			task_type, // DD_Task_Type type
@@ -342,7 +369,7 @@ static void DDT_Generator_Task( void *pvParameters )
 		};
 
 		// todo: fire off new dd_task into the event queue for the scheduler to consume
-		//queuesend(new_dd_task);
+		handle_dd_task(COMPLETE, new_dd_task);
 
 		dd_task_id++;
 
@@ -353,8 +380,12 @@ static void DDT_Generator_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
+// TODO: implement this
+adowha;dawhdl;iawhdio;haw
 static void User_Defined_Task( void *pvParameters )
 {
+	// dereference pvParamaters, get execution time, enable LED, wait, disable LED, and then call handle_dd_event(COMPLETE) function
+	uint32_t execution time
 	while(1)
 	{
 
@@ -385,24 +416,57 @@ static void User_Defined_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
-void release_dd_task() {
+//// This will fire exactly MAX_LIST_SIZE times
+//void release_dd_task( DD_Task dd_task ) {
+//	// TODO: confirm if dd_task needs to be mem allocated (likely not, since struct generated
+//
+//	Scheduler_Event new_release_event = {RELEASE, dd_task};
+//
+//	if( xQueueOverwrite(event_queue_handle, &new_release_event) )
+//	{
+//		// do nothing
+//	}
+//	else {
+//		printf("-- RELEASE: Sending to Event Queue Failed!");
+//	}
+//}
+//
+//// Same; fire MAX_LIST_SIZE times
+//void complete_dd_task( uint32_t task_id ) {
+//	Scheduler_Event new_complete_event = {COMPLETE, dd_task};
+//
+//	if( xQueueOverwrite(event_queue_handle, &new_complete_event) )
+//	{
+//		// do nothing
+//	}
+//	else {
+//		printf("-- COMPLETE: Sending to Event Queue Failed!");
+//	}
+//}
 
-}
+// Combined our release and complete into one function because they did the exact same thing. DRY PRINCIPLE!
+void handle_dd_task( Event_Type event_type, DD_Task dd_task ) {
+	Scheduler_Event new_event = {event_type, dd_task};
 
-void complete_dd_task() {
-
+	if( xQueueOverwrite(event_queue_handle, &new_event) )
+	{
+		// do nothing
+	}
+	else {
+		printf("-- DD_Event %d: Sending to Event Queue Failed!", event_type);
+	}
 }
 
 DD_Task_List_Node** get_active_dd_task_list() {
-
+	return (void*) p;
 }
 
 DD_Task_List_Node** get_completed_dd_task_list() {
-
+	return (void*) p;
 }
 
 DD_Task_List_Node** get_overdue_dd_task_list() {
-
+	return (void*) p;
 }
 
 
@@ -438,6 +502,9 @@ void vApplicationMallocFailedHook( void )
 	internally by FreeRTOS API functions that create tasks, queues, software 
 	timers, and semaphores.  The size of the FreeRTOS heap is set by the
 	configTOTAL_HEAP_SIZE configuration constant in FreeRTOSConfig.h. */
+
+	printf("MALLOC FAILED HOOK");
+
 	for( ;; );
 }
 /*-----------------------------------------------------------*/
