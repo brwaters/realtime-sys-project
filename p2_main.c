@@ -170,6 +170,11 @@ functionality.
 
 #define TICK_TO_MS_RATIO 1000/configTICK_RATE_HZ
 
+#define GREEN_LED	LED4 // 0
+#define AMBER_LED	LED3 // 1
+#define RED_LED		LED5 // 2
+#define BLUE_LED	LED6 // 3
+
 typedef enum dd_task_type {
 	PERIODIC,
 	APERIODIC
@@ -188,9 +193,10 @@ typedef struct dd_task {
 	DD_Task_Type type;
 	uint32_t task_id;
 	uint8_t parent_id;
-	uint32_t release_time;
-	uint32_t absolute_deadline;
-	uint32_t completion_time;
+	uint32_t time_to_execute;
+	uint32_t release_time_ticks;
+	uint32_t absolute_deadline_ticks;
+	uint32_t completion_time_ticks;
 } DD_Task;
 
 typedef struct dd_task_list_node {
@@ -201,6 +207,7 @@ typedef struct dd_task_list_node {
 typedef enum event_type {
 	RELEASE,
 	COMPLETE,
+	OVERDUE,
 	GET_ACTIVE,
 	GET_COMPLETED,
 	GET_OVERDUE
@@ -209,27 +216,39 @@ typedef enum event_type {
 // Any getter event will have the dd_task = NULL, and the handling logic will not attempt to access the NULL dd_task.
 typedef struct scheduler_event {
 	Event_Type event_type;
-	DD_Task dd_task;
+	DD_Task* dd_task;
+	xTimerHandle* overdue_timer;
 } Scheduler_Event;
+
+//typedef struct user_defined_task {
+//	TaskHandle_t t_handle;
+//	DD_Task_Type type;
+//	uint32_t task_id;
+//	uint8_t parent_id;
+//	uint32_t release_time;
+//	uint32_t absolute_deadline;
+//	uint32_t completion_time;
+//} User_Defined_Task;
 
 /*-----------------------------------------------------------*/
 
 // Hardware setup function definitions
 static void prvSetupHardware( void );
-static void GPIO_Setup( void );
-static void ADC_Setup ( void );
+
+/*-----------------------------------------------------------*/
 
 // Helper functions
-static void manualSleep( int time );
+//static void manualSleep( int time );
+void User_Def_Calc_For( int ms );
 void DD_Task_Generator_Setup(
 	DD_Task_Generator_Parameters* param_pointer_0,
 	DD_Task_Generator_Parameters* param_pointer_1,
 	DD_Task_Generator_Parameters* param_pointer_2
 );
 
-//void release_dd_task(DD_Task dd_task);
+//void release_dd_task(DD_Task dd_task); // we combined into one func handle_dd_task
 //void complete_dd_task(uint32_t task_id);
-void handle_dd_task( Event_Type event_type, DD_Task dd_task );
+void handle_dd_task( Event_Type event_type, DD_Task* dd_task );
 
 DD_Task_List_Node** get_active_dd_task_list( void );
 DD_Task_List_Node** get_complete_dd_task_list( void );
@@ -238,6 +257,14 @@ DD_Task_List_Node** get_overdue_dd_task_list( void );
 // Task function definitions
 static void DDT_Generator_Task( void *pvParameters );
 static void User_Defined_Task( void *pvParameters );
+
+/*-----------------------------------------------------------*/
+
+// List Interaction Functions
+DD_Task_List_Node* List_Pop(DD_Task_List_Node* list_head);
+void List_Push(DD_Task_List_Node* list_head);
+void List_Priority_Update(DD_Task_List_Node* list_head);
+void List_Sort(DD_Task_List_Node* list_head);
 
 /*-----------------------------------------------------------*/
 
@@ -270,15 +297,15 @@ int main( void )
 	// REPORT: This is a workaround to preserve memory in scope, which didn't actually end up fixing the problem
 	// Instead, malloc did. However, TODO - move this into the generator setup method.
 	DD_Task_Generator_Parameters* params_0_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));
-	DD_Task_Generator_Parameters* params_1_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));;
-	DD_Task_Generator_Parameters* params_2_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));;
+	DD_Task_Generator_Parameters* params_1_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));
+	DD_Task_Generator_Parameters* params_2_buffer = pvPortMalloc(sizeof(DD_Task_Generator_Parameters));
 
 //	printf("Malloc'd pointer address: %d\n", (int) params_0_buffer);
 
 	// Call the helper function to create the dd task generators.
 	DD_Task_Generator_Setup(params_0_buffer, params_1_buffer, params_2_buffer);
 
-	// Start the tasks and timer running.
+	// Start the tasks and timer running (important for xTaskGetTickCount()).
 	vTaskStartScheduler();
 
 	while(1) {
@@ -298,9 +325,9 @@ void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param_pointer_0, DD_
 	xTaskCreate( User_Defined_Task, "User_Defined_Task_1", configMINIMAL_STACK_SIZE, NULL, 2, &user_defined_handle_1 );
 	xTaskCreate( User_Defined_Task, "User_Defined_Task_2", configMINIMAL_STACK_SIZE, NULL, 2, &user_defined_handle_2 );
 
-	DD_Task_Generator_Parameters params_0 = {0, PERIODIC, user_defined_handle_0, DD_TASK_0_EX_TIME, DD_TASK_0_PERIOD};
-	DD_Task_Generator_Parameters params_1 = {1, PERIODIC, user_defined_handle_1, DD_TASK_1_EX_TIME, DD_TASK_1_PERIOD};
-	DD_Task_Generator_Parameters params_2 = {2, PERIODIC, user_defined_handle_2, DD_TASK_2_EX_TIME, DD_TASK_2_PERIOD};
+	DD_Task_Generator_Parameters params_0 = {GREEN_LED, PERIODIC, user_defined_handle_0, DD_TASK_0_EX_TIME, DD_TASK_0_PERIOD};
+	DD_Task_Generator_Parameters params_1 = {AMBER_LED, PERIODIC, user_defined_handle_1, DD_TASK_1_EX_TIME, DD_TASK_1_PERIOD};
+	DD_Task_Generator_Parameters params_2 = {RED_LED, PERIODIC, user_defined_handle_2, DD_TASK_2_EX_TIME, DD_TASK_2_PERIOD};
 
 	*param_pointer_0 = params_0;
 	*param_pointer_1 = params_1; // (DD_Task_Generator_Parameters) {1, PERIODIC, user_defined_handle_1, DD_TASK_1_EX_TIME, DD_TASK_1_PERIOD};
@@ -320,7 +347,7 @@ void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param_pointer_0, DD_
 	xTaskCreate( DDT_Generator_Task, "Generator_1", configMINIMAL_STACK_SIZE, (void*) param_pointer_1, 2, NULL );
 	xTaskCreate( DDT_Generator_Task, "Generator_2", configMINIMAL_STACK_SIZE, (void*) param_pointer_2, 2, NULL );
 
-	// TODO: why is attempting to free this pointer throwing a SIGINT?
+	// TODO: why is attempting to free this pointer throwing a SIGINT? can't vPortFree with heap_1.c but we've changed it to 4 now
 //	manualSleep(9999);
 //	vPortFree(param_pointer_0);
 }
@@ -345,64 +372,122 @@ static void DDT_Generator_Task( void *pvParameters )
 	TaskHandle_t parent_f_task_handle = params->f_task_handle;
 	DD_Task_Type task_type = params->task_type;
 	int execution_time = params->execution_time; // TODO: remove this if we end up reusing User Gen f_tasks
-	int period = params->period;
+	int period_ms = params->period; // TODO: make all instances of "period" "period_ms" for clarity between ms and ticks
 
 	int dd_task_id = 0;
 
-	printf("Params of Generator %d: %d %d\n", generator_id, execution_time, period);
+	printf("Params of Generator %d: %d %d\n", generator_id, execution_time, period_ms);
 
 	while(1)
 	{
-		// ACTUALLY. This is the scheduler's responsibility; getting arrival time, calculating deadline + expected time.
-		// TODO: do that
 		// Get the time for the DD Task's creation.
-//		uint32_t arrival_time = xTaskGetTickCount() * TICK_TO_MS_RATIO; // Ticks must be converted to MS // TODO: we could do this conversion in the monitor if we felt like it
-// WE COULD: generate a new f task and pass the handle to new dd task given us access to
-		DD_Task new_dd_task = {
+		uint32_t release_time = xTaskGetTickCount() * TICK_TO_MS_RATIO; // Ticks must be converted to MS // TODO: we could do this conversion in the monitor if we felt like it
+		uint32_t deadline_ticks = xTaskGetTickCount() + pdMS_TO_TICKS(period_ms);
+
+		//Might malloc here if address space
+		DD_Task* new_dd_task = pvPortMalloc(sizeof(DD_Task));
+
+		*new_dd_task = (DD_Task) {
 			parent_f_task_handle, // TaskHandle_t t_handle
 			task_type, // DD_Task_Type type
 			dd_task_id, // uint32_t task_id
 			generator_id, // uint8_t parent_id
-			(uint32_t) NULL, // uint32_t release_time,
-			(uint32_t) NULL, // uint32_t absolute_deadline (release_time + period),
+			execution_time, // uint32_t time_to_execute
+			release_time, // uint32_t release_time_ticks,
+			deadline_ticks, // uint32_t absolute_deadline,
 			(uint32_t) NULL, // uint32_t completion_time
 		};
 
-		// todo: fire off new dd_task into the event queue for the scheduler to consume
-		handle_dd_task(COMPLETE, new_dd_task);
+		// TODO: fire off new dd_task into the event queue for the scheduler to consume
+		handle_dd_task(RELEASE, new_dd_task);
 
 		dd_task_id++;
 
 		// Do we use vTaskdelay or our manual sleep function?
-		vTaskDelay(pdMS_TO_TICKS(period));
+		vTaskDelay(pdMS_TO_TICKS(period_ms));
 	}
 }
 
 /*-----------------------------------------------------------*/
 
 // TODO: implement this
-adowha;dawhdl;iawhdio;haw
 static void User_Defined_Task( void *pvParameters )
 {
 	// dereference pvParamaters, get execution time, enable LED, wait, disable LED, and then call handle_dd_event(COMPLETE) function
-	uint32_t execution time
-	while(1)
-	{
-
-	}
+	// STM_EVAL_LEDInit(); Done in hardware setup func
+	//	STM_EVAL_LEDOn(AMBER_LED);
+	//	STM_EVAL_LEDOff(AMBER_LED);
+	DD_Task* dd_task = (DD_Task*) pvParameters;
+	uint32_t time_to_execute = dd_task->time_to_execute;
+	STM_EVAL_LEDOn(dd_task->parent_id);
+	User_Def_Calc_For(time_to_execute);
+	STM_EVAL_LEDOff(dd_task->parent_id);
+	handle_dd_task(COMPLETE, dd_task);
 }
 
 /*-----------------------------------------------------------*/
 
-// This task is responsible for rotating through the current displayed traffic light (green, yellow, or red) and maintaining
-// 		that light for a period proportional to the traffic flow.
-//static void Traffic_Light_State_Task( void *pvParameters )
-//{
-//	while(1)
-//	{
-//
-//	}
-//}
+static void Overdue_Callback(TimerHandle_t timer) {
+	Scheduler_Event new_overdue_event = {OVERDUE, NULL, &timer};
+
+	if (xQueueSend(event_queue_handle, &new_overdue_event, 500)) {
+		// do nothing
+	}
+	else {
+		printf("Overdue send to Event Queue failed!");
+	}
+
+}
+
+
+static void Scheduler_Task( void *pvParameters )
+{
+	DD_Task_List_Node active_dummy_head;
+	DD_Task_List_Node overdue_dummy_head;
+	DD_Task_List_Node complete_dummy_head;
+
+	xTimerHandle active_timers[100];
+
+	Scheduler_Event incoming_event;
+
+	while(1)
+	{
+		if ( xQueueReceive(event_queue_handle, &incoming_event, 500)) {
+			if (incoming_event.event_type == RELEASE) {
+				DD_Task* task_to_release = incoming_event.dd_task;
+				uint32_t overdue_deadline_ticks = task_to_release->absolute_deadline_ticks;
+				uint32_t timer_id = task_to_release->task_id;
+				xTimerHandle new_timer = xTimerCreate("DD_Task_Overdue_Timer", overdue_deadline_ticks, pdFALSE, (void* ) &timer_id, Overdue_Callback);
+
+
+
+			}
+			else if (incoming_event.event_type == COMPLETE) {
+
+			}
+			else if (incoming_event.event_type == OVERDUE) {
+				xTimerHandle* overdue_timer = incoming_event.overdue_timer;
+				uint32_t timer_id = pvTimerGetTimerID(overdue_timer);
+				removeOverdue(timer_id);
+			}
+			else if (incoming_event.event_type == GET_ACTIVE) {
+
+			}
+			else if (incoming_event.event_type == GET_COMPLETED) {
+
+			}
+			else if (incoming_event.event_type == GET_OVERDUE) {
+
+			}
+			else {
+
+			}
+		}
+		else {
+			printf("Scheduler - No events to consume.");
+		}
+	}
+}
 
 /*-----------------------------------------------------------*/
 
@@ -416,39 +501,11 @@ static void User_Defined_Task( void *pvParameters )
 
 /*-----------------------------------------------------------*/
 
-//// This will fire exactly MAX_LIST_SIZE times
-//void release_dd_task( DD_Task dd_task ) {
-//	// TODO: confirm if dd_task needs to be mem allocated (likely not, since struct generated
-//
-//	Scheduler_Event new_release_event = {RELEASE, dd_task};
-//
-//	if( xQueueOverwrite(event_queue_handle, &new_release_event) )
-//	{
-//		// do nothing
-//	}
-//	else {
-//		printf("-- RELEASE: Sending to Event Queue Failed!");
-//	}
-//}
-//
-//// Same; fire MAX_LIST_SIZE times
-//void complete_dd_task( uint32_t task_id ) {
-//	Scheduler_Event new_complete_event = {COMPLETE, dd_task};
-//
-//	if( xQueueOverwrite(event_queue_handle, &new_complete_event) )
-//	{
-//		// do nothing
-//	}
-//	else {
-//		printf("-- COMPLETE: Sending to Event Queue Failed!");
-//	}
-//}
-
 // Combined our release and complete into one function because they did the exact same thing. DRY PRINCIPLE!
-void handle_dd_task( Event_Type event_type, DD_Task dd_task ) {
-	Scheduler_Event new_event = {event_type, dd_task};
+void handle_dd_task( Event_Type event_type, DD_Task* dd_task ) {
+	Scheduler_Event new_event = {event_type, dd_task, NULL};
 
-	if( xQueueOverwrite(event_queue_handle, &new_event) )
+	if( xQueueSend(event_queue_handle, &new_event, 500) ) // Lab 0/1 used 500; could tweak?
 	{
 		// do nothing
 	}
@@ -458,17 +515,42 @@ void handle_dd_task( Event_Type event_type, DD_Task dd_task ) {
 }
 
 DD_Task_List_Node** get_active_dd_task_list() {
+	DD_Task_List_Node** p;
 	return (void*) p;
 }
 
 DD_Task_List_Node** get_completed_dd_task_list() {
+	DD_Task_List_Node* p;
 	return (void*) p;
 }
 
 DD_Task_List_Node** get_overdue_dd_task_list() {
+	DD_Task_List_Node* p;
 	return (void*) p;
 }
 
+/*-----------------------------------------------------------*/
+
+DD_Task_List_Node* List_Pop(DD_Task_List_Node* list_head) {
+
+}
+
+void List_Push(DD_Task_List_Node* list_head) {
+
+}
+
+void List_Priority_Update(DD_Task_List_Node* list_head) {
+
+}
+
+void List_Sort(DD_Task_List_Node* list_head) {
+
+}
+
+void Remove_Overdue(uint32_t overdue_timer_id) {
+	// TODO:
+	// traverse list, find the node we want to remove, and call Remove() on it or just remove it.
+}
 
 
 
@@ -476,16 +558,22 @@ DD_Task_List_Node** get_overdue_dd_task_list() {
 
 // A quick and dirty method for manually delaying our system so that the peripherals have time
 //		to catch up to our way faster CPU.
-static void manualSleep(int time) {
-	for (int i = time; i > 0; i--) {
-		// Wait!
-	}
+//static void manualSleep(int time) {
+//	for (int i = time; i > 0; i--) {
+//		// Wait!
+//	}
+//}
+
+// Dummy callback function, as nothing special needs to happen on timer end (these timers are one-shot)
+static void Timer_Callback(TimerHandle_t timer) {
+	return;
 }
 
-// TODO: use the RTOS sleep thing
-static void RTOS_Sleep(int time) {
-	for (int i = time; i > 0; i--) {
-		// Wait!
+void User_Def_Calc_For(int ms) {
+	// TODO: try using NULL instead of a dummy callback function
+	TimerHandle_t timer = xTimerCreate("General Timer", pdMS_TO_TICKS(ms), pdFALSE, (void* ) 0, Timer_Callback);
+	if ( xTimerStart(timer, 0) ) {
+		printf("Timer Failed to execute.");
 	}
 }
 
@@ -549,61 +637,9 @@ volatile size_t xFreeStackSpace;
 static void prvSetupHardware( void )
 {
 	printf("Hardware being setup.\n");
+	STM_EVAL_LEDInit(AMBER_LED);
+	STM_EVAL_LEDInit(GREEN_LED);
+	STM_EVAL_LEDInit(RED_LED);
+	STM_EVAL_LEDInit(BLUE_LED);
 	NVIC_SetPriorityGrouping( 0 );
-
-	GPIO_Setup();
-//	ADC_Setup();
-
-}
-
-// gpio analog for pot
-// one for each Big Boi LEDs might need different mode (GPIO to out)
-// pino 0 1 2 3
-
-// This function sets the correct config states for the GPIO and each pin we use.
-static void GPIO_Setup( void ) {
-	// Enable Clock
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
-
-	// GPIO_Init
-	// Must create an InitStruct to set characteristics of GPIOC, then pass into GPIO_Init function.
-	GPIO_InitTypeDef GPIO_InitStruct;
-
-    // Setup for PC0, PC1, PC2 for Traffic Lights (Red, Amber, Green)PC6, 7, 8 Shift Registers.
-	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_6 | GPIO_Pin_7 | GPIO_Pin_8;
-	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_OUT; // Alternate Function, but out is also an option
-	GPIO_InitStruct.GPIO_OType = GPIO_OType_PP; // Push-Pull
-	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL; // Pull Down? // no pull is also an option
-	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_2MHz; // Faster the clock is, drives the signal harder, draws more current, more spiking and ringing which poses problems.
-	GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-	// Pin 3 needs special settings as it connects to the potentiometer via the ADC.
-	GPIO_InitStruct.GPIO_Pin = GPIO_Pin_3;
-	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AN; // Analog mode for ADC
-	GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_NOPULL; // No pull-up or pull-down for analog
-	GPIO_Init(GPIOC, &GPIO_InitStruct);
-}
-
-// This function similarly configures the ADC.
-static void ADC_Setup ( void ) {
-	// Enable Clock
-	RCC_APB2PeriphClockCmd(RCC_APB2ENR_ADC1EN, ENABLE);
-
-	// ADC Init Configuration
-	ADC_InitTypeDef ADC_InitStruct;
-	ADC_InitStruct.ADC_ContinuousConvMode = DISABLE;
-
-	// We should prefer a right-aligned endian-ness
-	ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
-	ADC_InitStruct.ADC_Resolution = ADC_Resolution_12b;
-	ADC_InitStruct.ADC_ExternalTrigConv = DISABLE;
-
-	// Initialize the ADC using the init structure.
-	ADC_Init(ADC1, &ADC_InitStruct);
-
-	// ADC Enable
-	ADC_Cmd(ADC1, ENABLE);
-
-	// ADC Channel Config - Slides say to try different sample times
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_3Cycles);
 }
