@@ -149,7 +149,7 @@ typedef struct dd_task {
 } DD_Task;
 
 typedef struct dd_task_list_node {
-	DD_Task task; // Since the generator allocates space for the DD_Task, to ensure we don't drop / make any copies, we pass around pointers to that first creation of the DD_Task.
+	DD_Task* task; // Since the generator allocates space for the DD_Task, to ensure we don't drop / make any copies, we pass around pointers to that first creation of the DD_Task.
 	struct dd_task_list_node* next_node;
 } DD_Task_List_Node;
 
@@ -201,13 +201,16 @@ static void Overdue_Callback(TimerHandle_t timer);
 //void complete_dd_task(uint32_t task_id);
 void handle_dd_task( Event_Type event_type, DD_Task* dd_task );
 DD_Task_List_Node** get_active_dd_task_list( void );
-DD_Task_List_Node** get_complete_dd_task_list( void );
+DD_Task_List_Node** get_completed_dd_task_list( void );
 DD_Task_List_Node** get_overdue_dd_task_list( void );
 
 // Task function definitions
 static void DDT_Generator_Task( void *pvParameters );
 static void User_Defined_Task( void *pvParameters );
 static void Scheduler_Task( void *pvParameters );
+static void Monitor_Task( void *pvParameters );
+
+void DEBUG_Print_List(DD_Task_List_Node* list_head);
 
 /*-----------------------------------------------------------*/
 
@@ -320,19 +323,8 @@ static void DDT_Generator_Task( void *pvParameters )
 			uint32_t release_time = xTaskGetTickCount() * TICK_TO_MS_RATIO; // Ticks must be converted to MS // TODO: we could do this conversion in the monitor if we felt like it
 			uint32_t deadline_ticks = xTaskGetTickCount() + pdMS_TO_TICKS(period_ms);
 
-//			DD_Task* new_dd_task = pvPortMalloc(sizeof(DD_Task));
-//			*new_dd_task = (DD_Task) {
-//				NULL, // TaskHandle_t t_handle
-//				task_type, // DD_Task_Type type
-//				dd_task_id, // uint32_t task_id
-//				generator_id, // uint8_t parent_id
-//				execution_time, // uint32_t time_to_execute
-//				release_time, // uint32_t release_time_ticks,
-//				deadline_ticks, // uint32_t absolute_deadline,
-//				(uint32_t) NULL, // uint32_t completion_time
-//			};
-
-			DD_Task new_dd_task = {
+			DD_Task* new_dd_task = pvPortMalloc(sizeof(DD_Task));
+			*new_dd_task = (DD_Task) {
 				NULL, // TaskHandle_t t_handle
 				task_type, // DD_Task_Type type
 				num_dd_tasks_generated + 100 * generator_id, // uint32_t task_id
@@ -342,6 +334,17 @@ static void DDT_Generator_Task( void *pvParameters )
 				deadline_ticks, // uint32_t absolute_deadline,
 				(uint32_t) NULL, // uint32_t completion_time
 			};
+
+//			DD_Task new_dd_task = {
+//				NULL, // TaskHandle_t t_handle
+//				task_type, // DD_Task_Type type
+//				num_dd_tasks_generated + 100 * generator_id, // uint32_t task_id
+//				generator_id, // uint8_t parent_id
+//				execution_time, // uint32_t time_to_execute
+//				release_time, // uint32_t release_time_ticks,
+//				deadline_ticks, // uint32_t absolute_deadline,
+//				(uint32_t) NULL, // uint32_t completion_time
+//			};
 
 //			if ()
 
@@ -355,7 +358,7 @@ static void DDT_Generator_Task( void *pvParameters )
 			// FUNKY - assign the handle back to the DD task we just passed into the f_task
 //			new_dd_task.t_handle = user_task_handle;
 
-			handle_dd_task(RELEASE, &new_dd_task);
+			handle_dd_task(RELEASE, new_dd_task);
 
 			num_dd_tasks_generated++;
 
@@ -455,7 +458,7 @@ static void Scheduler_Task( void *pvParameters )
 		if ( xQueueReceive(event_queue_handle, &incoming_event, 500)) {
 			num_events++;
 			if (incoming_event.event_type == RELEASE) {
-				printf("%d | Task %d Released | %d ms.\n", num_events, incoming_event.dd_task->task_id, (uint32_t) xTaskGetTickCount() * TICK_TO_MS_RATIO);
+				printf("%d | Task %d Released | %d ms.\n", num_events, incoming_event.dd_task->task_id, (incoming_event.dd_task->release_time_ticks) * TICK_TO_MS_RATIO);
 
 				TaskHandle_t user_task_handle;
 				xTaskCreate( User_Defined_Task, "User_Defined_Task", configMINIMAL_STACK_SIZE, (void *) incoming_event.dd_task, USER_TASK_PRIORITY, &user_task_handle);
@@ -467,33 +470,28 @@ static void Scheduler_Task( void *pvParameters )
 				uint32_t timer_id = incoming_event.dd_task->task_id;
 				// Sends an overdue event if timer expires via the Overdue_Callback() function.
 				xTimerCreate("DD_Task_Overdue_Timer", overdue_deadline_ticks, pdFALSE, (void* ) &timer_id, Overdue_Callback);
-////
+
 //				// Add the new node to the list.
 				DD_Task_List_Node* new_active_node = pvPortMalloc(sizeof(DD_Task_List_Node));
-				*new_active_node = (DD_Task_List_Node) {*(incoming_event.dd_task), NULL};
-//				Smart_Active_Insert(active_dummy_head, new_active_node);
+				*new_active_node = (DD_Task_List_Node) {incoming_event.dd_task, NULL};
+				Smart_Active_Insert(active_dummy_head, new_active_node);
 			}
 			else if (incoming_event.event_type == COMPLETE) {
-				uint32_t complete_task_ID = *((uint32_t*) pvTimerGetTimerID(*(incoming_event.overdue_timer)));
-				printf("%d | Task %d Completed | %d ms.\n", num_events, incoming_event.dd_task->task_id, (uint32_t) xTaskGetTickCount() * TICK_TO_MS_RATIO);
-				Remove_Completed(complete_task_ID, active_dummy_head, completed_dummy_head);
+//				uint32_t complete_task_ID = *((uint32_t*) pvTimerGetTimerID(*(incoming_event.overdue_timer)));
+//				printf("%d | Task %d Completed | %d ms.\n", num_events, incoming_event.dd_task->task_id, (uint32_t) xTaskGetTickCount() * TICK_TO_MS_RATIO);
+//				Remove_Completed(complete_task_ID, active_dummy_head, completed_dummy_head);
 			}
 			else if (incoming_event.event_type == OVERDUE) {
-				uint32_t overdue_task_ID = *((uint32_t*) pvTimerGetTimerID(*(incoming_event.overdue_timer)));
-				printf("%d | Task %d Released | %d ms.\n", num_events, (uint32_t) pvTimerGetTimerID(incoming_event.overdue_timer), (uint32_t) xTaskGetTickCount() * TICK_TO_MS_RATIO);
-
-				// The callback function only has access to it's own timer; luckily, we assign the timer's ID to be the EXACT SAME as the DD_Task's id!
-//				xTimerHandle* overdue_timer = incoming_event.overdue_timer;
-				// pvTimerGetTimerID returns a void pointer
-//				uint32_t timer_id = (uint32_t) pvTimerGetTimerID(overdue_timer); // TODO: could export to the callback function's responsibility, to save time in the Scheduler
-
-				// WAIT WAIT WE COULD OPTIMIZE THIS
-				// WE DON'T NEED TO FIND THE DD_TASK IN THE LIST if we just vTaskDelete INSIDE THE REMOVE() METHOD
-				// DD_Task* overdue_dd_task = getDDTaskById(timer_id, active_dummy_head);
-				// vTaskDelete(overdue_dd_task->t_handle);
-				// overdue_dd_task->t_handle = NULL;
-
-				Remove_Overdue(overdue_task_ID, active_dummy_head, overdue_dummy_head);
+//				uint32_t overdue_task_ID = *((uint32_t*) pvTimerGetTimerID(*(incoming_event.overdue_timer)));
+//				printf("%d | Task %d Released | %d ms.\n", num_events, (uint32_t) pvTimerGetTimerID(incoming_event.overdue_timer), (uint32_t) xTaskGetTickCount() * TICK_TO_MS_RATIO);
+////
+////				// The callback function only has access to it's own timer; luckily, we assign the timer's ID to be the EXACT SAME as the DD_Task's id!
+//////				xTimerHandle* overdue_timer = incoming_event.overdue_timer;
+////				// pvTimerGetTimerID returns a void pointer
+//////				uint32_t timer_id = (uint32_t) pvTimerGetTimerID(overdue_timer); // TODO: could export to the callback function's responsibility, to save time in the Scheduler
+//
+//
+//				Remove_Overdue(overdue_task_ID, active_dummy_head, overdue_dummy_head);
 			}
 			else if (incoming_event.event_type == GET_ACTIVE) {
 				if( xQueueSend(active_list_queue_handle, &active_dummy_head, 500) ) // Lab 0/1 used 500; could tweak?
@@ -530,6 +528,11 @@ static void Scheduler_Task( void *pvParameters )
 //			printf("Scheduler - No events to consume.\n");
 		}
 
+		if (num_events >= 10) {
+			DEBUG_Print_List(active_dummy_head);
+			while(1);
+		}
+
 		vTaskDelay(500);
 	}
 }
@@ -548,7 +551,7 @@ static void Monitor_Task( void *pvParameters )
 	{
 		num_active = Get_List_Length(*get_active_dd_task_list());
 		num_overdue = Get_List_Length(*get_overdue_dd_task_list());
-		num_complete = Get_List_Length(*get_complete_dd_task_list());
+		num_complete = Get_List_Length(*get_completed_dd_task_list());
 
 		printf("### Time %lu: %du Active Tasks, %d Overdue Tasks, and %d Complete Tasks. ###\n", (uint32_t) xTaskGetTickCount(), num_active, num_overdue, num_complete);
 
@@ -592,7 +595,7 @@ DD_Task_List_Node** get_active_dd_task_list() {
 	return NULL;
 }
 
-DD_Task_List_Node** get_completed_dd_task_list() {
+DD_Task_List_Node** get_completed_dd_task_list( void ) {
 	DD_Task_List_Node** p;
 	//DD_Task* dd_task; // Do we even need a task here; just make it NULL?
 	Scheduler_Event new_event = {GET_COMPLETED, NULL, NULL};
@@ -644,11 +647,11 @@ DD_Task_List_Node** get_overdue_dd_task_list() {
 DD_Task_List_Node* List_Init( void ) {
 	DD_Task_List_Node* head = pvPortMalloc(sizeof(DD_Task_List_Node));
 	DD_Task_List_Node* tail = pvPortMalloc(sizeof(DD_Task_List_Node));
-	DD_Task empty_task = (DD_Task) {};
+//	DD_Task empty_task = (DD_Task) {};
 
-	head->task = empty_task;
+	head->task = NULL;
 	head->next_node = tail;
-	tail->task = empty_task;
+	tail->task = NULL;
 	tail->next_node = NULL;
 	return head;
 }
@@ -663,7 +666,7 @@ DD_Task_List_Node* getDDTaskById(uint32_t taskId, DD_Task_List_Node* list_head) 
 	}
 	// We traverse the list while we haven't ran out of space and have yet to find the node with our desired ID
 	// This is potentially risky if C does not behave as expected (checking 1st condition then 2nd linearly)
-	while ((curr->next_node != NULL) && (curr->task.task_id != taskId)) {
+	while ((curr->next_node != NULL) && (curr->task->task_id != taskId)) {
 		curr = curr->next_node;
 	}
 	// If we're at the end of the line (i.e. at dummy tail), we could not find the task by its id.
@@ -707,7 +710,7 @@ void Smart_Active_Insert(DD_Task_List_Node* list_head, DD_Task_List_Node* new_no
 		return;
 	}
 	// We traverse the list while we haven't ran out of space and have yet to find a node with a larger deadline than ours
-	while ((curr->next_node != NULL) && (new_node->task.absolute_deadline_ticks <= curr->task.absolute_deadline_ticks)) {
+	while ((curr->next_node != NULL) && (new_node->task->absolute_deadline_ticks <= curr->task->absolute_deadline_ticks)) {
 		prev = curr;
 		curr = curr->next_node;
 	}
@@ -738,10 +741,10 @@ void List_Priority_Update(DD_Task_List_Node* list_head) {
 		return;
 	}
 
-	vTaskPrioritySet(curr->task.t_handle, 1);
+	vTaskPrioritySet(curr->task->t_handle, 1);
 
 	while (curr->next_node != NULL) {
-		vTaskPrioritySet(curr->next_node->task.t_handle, 0);
+		vTaskPrioritySet(curr->next_node->task->t_handle, 0);
 		curr = curr->next_node;
 	}
 }
@@ -761,7 +764,7 @@ void Remove_Overdue(uint32_t overdue_timer_id, DD_Task_List_Node* active_head, D
 		return;
 	}
 	// We traverse the list until either we find what we're looking for, or we run out of list.
-	while ((curr->next_node != NULL) && (overdue_timer_id != curr->task.task_id)) {
+	while ((curr->next_node != NULL) && (overdue_timer_id != curr->task->task_id)) {
 		prev = curr;
 		curr = curr->next_node;
 	}
@@ -777,8 +780,8 @@ void Remove_Overdue(uint32_t overdue_timer_id, DD_Task_List_Node* active_head, D
 
 	// Remove the corresponding f_task so that the overdue task does not get allocated any time/resources.
 	printf("Deleting ftask.\n");
-	vTaskDelete(curr->task.t_handle);
-	curr->task.t_handle = NULL;
+	vTaskDelete(curr->task->t_handle);
+	curr->task->t_handle = NULL;
 
 	// Add the overdue task to the front of the overdue list.
 	List_Push(overdue_head, curr);
@@ -801,7 +804,7 @@ void Remove_Completed(uint32_t completed_dd_task_id, DD_Task_List_Node* active_h
 		return;
 	}
 	// We traverse the list until either we find what we're looking for, or we run out of list (i.e. we're on the dummy tail).
-	while ((curr->next_node != NULL) && (completed_dd_task_id != curr->task.task_id)) {
+	while ((curr->next_node != NULL) && (completed_dd_task_id != curr->task->task_id)) {
 		prev = curr;
 		curr = curr->next_node;
 	}
@@ -816,8 +819,8 @@ void Remove_Completed(uint32_t completed_dd_task_id, DD_Task_List_Node* active_h
 	curr->next_node = NULL; // Isolate current from the list.
 
 	// Remove the corresponding f_task, mostly for posterity.
-//	vTaskDelete(curr->task.t_handle); Task does this to itself instead
-	curr->task.t_handle = NULL;
+	vTaskDelete(curr->task->t_handle);
+	curr->task->t_handle = NULL;
 
 	// Add the overdue task to the front of the overdue list.
 	List_Push(completed_head, curr);
@@ -843,11 +846,11 @@ void DEBUG_Print_List(DD_Task_List_Node* list_head) {
 	// While we're not at the dummy tail...
 	while (curr->next_node != NULL) {
 		printf("\nDEBUG - Printing Node in list:\n");
-		printf("Generator ID: %d\n", curr->task.parent_id);
-		printf("Task ID: %lu\n", curr->task.task_id);
-		printf("Absolute Deadline: %lu\n", curr->task.absolute_deadline_ticks);
-		printf("Release Time: %lu\n", curr->task.release_time_ticks);
-		printf("Time to Complete: %lu\n", curr->task.completion_time_ticks);
+		printf("Generator ID: %d\n", curr->task->parent_id);
+		printf("Task ID: %lu\n", curr->task->task_id);
+		printf("Absolute Deadline: %lu\n", curr->task->absolute_deadline_ticks);
+		printf("Release Time: %lu\n", curr->task->release_time_ticks);
+		printf("Time to Complete: %lu\n", curr->task->completion_time_ticks);
 
 		curr = curr->next_node;
 	}
