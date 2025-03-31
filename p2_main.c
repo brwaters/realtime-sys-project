@@ -170,6 +170,8 @@ functionality.
 
 #define TICK_TO_MS_RATIO 1000/configTICK_RATE_HZ
 
+#define MONITOR_PERIOD_MS 50
+
 #define GREEN_LED	LED4 // 0
 #define AMBER_LED	LED3 // 1
 #define RED_LED		LED5 // 2
@@ -269,6 +271,7 @@ void List_Push(DD_Task_List_Node* list_head, DD_Task_List_Node* new_node);
 void List_Priority_Update(DD_Task_List_Node* list_head);
 void List_Sort(DD_Task_List_Node* list_head);
 void Remove_Overdue(uint32_t taskId, DD_Task_List_Node* active_head, DD_Task_List_Node* overdue_head);
+void Remove_Completed(uint32_t completed_dd_task_id, DD_Task_List_Node* active_head, DD_Task_List_Node* completed_head);
 DD_Task_List_Node* getDDTaskById(uint32_t taskId, DD_Task_List_Node* list_head);
 
 /*-----------------------------------------------------------*/
@@ -289,9 +292,9 @@ int main( void )
 
 	// Create the queues used by our tasks.
 	event_queue_handle = xQueueCreate( 2*(MAX_LIST_SIZE), sizeof(Scheduler_Event) ); // Decently large buffer queue for task communication
-	active_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
-	complete_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
-	overdue_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node) ); // Length 1 buffer queue
+	active_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node**) ); // Length 1 buffer queue
+	complete_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node**) ); // Length 1 buffer queue
+	overdue_list_queue_handle = xQueueCreate( 1, sizeof(DD_Task_List_Node**) ); // Length 1 buffer queue
 
 	// Add each queue to the registry, for kernel aware debugging.
 	vQueueAddToRegistry( event_queue_handle, "EventQueue" );
@@ -351,7 +354,6 @@ void DD_Task_Generator_Setup( DD_Task_Generator_Parameters* param_pointer_0, DD_
 
 static void DDT_Generator_Task( void *pvParameters )
 {
-
 	DD_Task_Generator_Parameters* params;
 	params = (DD_Task_Generator_Parameters*) pvParameters;
 
@@ -426,6 +428,9 @@ static void User_Defined_Task( void *pvParameters )
 	User_Def_Calc_For(time_to_execute);
 	STM_EVAL_LEDOff(dd_task->parent_id);
 	handle_dd_task(COMPLETE, dd_task);
+
+	// TODO: Place a breakpoint in this function so that every time one finishes we can pause and take a look at how the
+	// 		system is performing in that particular snapshot of time.
 }
 
 /*-----------------------------------------------------------*/
@@ -446,7 +451,7 @@ static void Scheduler_Task( void *pvParameters )
 {
 	DD_Task_List_Node* active_dummy_head = List_Init();
 	DD_Task_List_Node* overdue_dummy_head = List_Init();
-//	DD_Task_List_Node* complete_dummy_head = List_Init();
+	DD_Task_List_Node* complete_dummy_head = List_Init();
 
 	// We may not have to use this? Not sure of FreeRTOS kills one-shot timers after they are completed.
 //	xTimerHandle active_timers[100];
@@ -476,45 +481,81 @@ static void Scheduler_Task( void *pvParameters )
 			else if (incoming_event.event_type == COMPLETE) {
 				printf("EVENT TRIGGER - COMPLETE! :)");
 				// Does complete need access to the f_task?
+				uint32_t completed_dd_task_id = incoming_event.
+
 			}
 			else if (incoming_event.event_type == OVERDUE) {
 				// The callback function only has access to it's own timer; luckily, we assign the timer's ID to be the EXACT SAME as the DD_Task's id!
 				xTimerHandle* overdue_timer = incoming_event.overdue_timer;
 				// pvTimerGetTimerID returns a void pointer
 				uint32_t timer_id = (uint32_t) pvTimerGetTimerID(overdue_timer); // TODO: could export to the callback function's responsibility, to save time in the Scheduler
-				DD_Task* overdue_dd_task = getDDTaskById(timer_id, active_dummy_head);
-				vTaskDelete(overdue_dd_task->t_handle);
-				overdue_dd_task->t_handle = NULL;
+				
+				// WAIT WAIT WE COULD OPTIMIZE THIS
+				// WE DON'T NEED TO FIND THE DD_TASK IN THE LIST if we just vTaskDelete INSIDE THE REMOVE() METHOD
+				// DD_Task* overdue_dd_task = getDDTaskById(timer_id, active_dummy_head);
+				// vTaskDelete(overdue_dd_task->t_handle);
+				// overdue_dd_task->t_handle = NULL;
+
 				Remove_Overdue(timer_id, active_dummy_head, overdue_dummy_head);
 			}
 			else if (incoming_event.event_type == GET_ACTIVE) {
-
+				if( xQueueSend(active_list_queue_handle, &active_dummy_head, 500) ) // Lab 0/1 used 500; could tweak?
+				{
+					// do nothing
+				}
+				else {
+					printf("-- Sending to active_list_queue Failed!");
+				}
 			}
 			else if (incoming_event.event_type == GET_COMPLETED) {
-
+				if( xQueueSend(completed_list_queue_handle, &completed_dummy_head, 500) ) // Lab 0/1 used 500; could tweak?
+				{
+					// do nothing
+				}
+				else {
+					printf("-- Sending completed_list_queue Failed!");
+				}
 			}
 			else if (incoming_event.event_type == GET_OVERDUE) {
-
+				if( xQueueSend(completed_overdue_queue_handle, &overdue_dummy_head, 500) ) // Lab 0/1 used 500; could tweak?
+				{
+					// do nothing
+				}
+				else {
+					printf("-- Sending to overdue_list_queue Failed!");
+				}
 			}
 			else {
-
+				printf("UNHANDLED INCOMING EVENT TYPE!!!\n");
 			}
 		}
 		else {
-			printf("Scheduler - No events to consume.");
+			printf("Scheduler - No events to consume.\n");
 		}
 	}
 }
 
 /*-----------------------------------------------------------*/
 
-//static void Monitor_Task( void *pvParameters )
-//{
-//	while(1)
-//	{
-//		TODO: combine DD_task's id w/ the generator task ID via it's handle
-//	}
-//}
+static void Monitor_Task( void *pvParameters )
+{
+	uint8_t num_active;
+	uint8_t num_overdue;
+	uint8_t num_complete;
+
+	// MAYBE: combine DD_task's id w/ the generator task ID via it's handle
+
+	while(1)
+	{
+		num_active = get_active_dd_task_list();
+		num_overdue = get_overdue_dd_task_list();
+		num_complete = get_complete_dd_task_list();
+
+		printf("### Time %d: %d Active Tasks, %d Overdue Tasks, and %d Complete Tasks. ###\n", xTaskGetTickCount(), num_active, num_overdue, num_complete);
+	
+		vTaskDelay(pdMS_TO_TICKS(MONITOR_PERIOD_MS));
+	}
+}
 
 /*-----------------------------------------------------------*/
 
@@ -533,17 +574,67 @@ void handle_dd_task( Event_Type event_type, DD_Task* dd_task ) {
 
 DD_Task_List_Node** get_active_dd_task_list() {
 	DD_Task_List_Node** p;
-	return (void*) p;
+	Scheduler_Event new_event = {GET_ACTIVE, NULL, NULL};
+
+	if( xQueueSend(event_queue_handle, &new_event, 500) )
+	{
+		if (xQueueReceive(active_list_queue_handle, &p, 1000))
+		{
+			return p;
+		}
+		else {
+			printf("-- GET_ACTIVE Could not consume from active_list_queue !\n");
+		}
+	}
+	else {
+		printf("-- GET_ACTIVE Event Sending to Event Queue Failed!\n");
+	}
+
+	return NULL;
 }
 
 DD_Task_List_Node** get_completed_dd_task_list() {
-	DD_Task_List_Node* p;
-	return (void*) p;
+	DD_Task_List_Node** p;
+	Scheduler_Event new_event = {GET_COMPLETED, dd_task, NULL};
+
+	if( xQueueSend(event_queue_handle, &new_event, 500) )
+	{
+		// TODO - maybe introduce a manual sleep timer here, just to give the DD Scheduler a chance?
+		if (xQueueReceive(completed_list_queue_handle, &p, 1000))
+		{
+			return p;
+		}
+		else {
+			printf("-- GET_COMPLETED Could not consume from completed_list_queue !\n");
+		}
+	}
+	else {
+		printf("-- GET_COMPLETED Event Sending to Event Queue Failed!\n");
+	}
+
+	return NULL;
 }
 
 DD_Task_List_Node** get_overdue_dd_task_list() {
-	DD_Task_List_Node* p;
-	return (void*) p;
+	DD_Task_List_Node** p;
+	Scheduler_Event new_event = {GET_OVERDUE, dd_task, NULL};
+
+	if( xQueueSend(event_queue_handle, &new_event, 500) )
+	{
+		// TODO - maybe introduce a manual sleep timer here, just to give the DD Scheduler a chance?
+		if (xQueueReceive(overdue_list_queue_handle, &p, 1000))
+		{
+			return p;
+		}
+		else {
+			printf("-- GET_OVERDUE Could not consume from overdue_list_queue !\n");
+		}
+	}
+	else {
+		printf("-- GET_OVERDUE Event Sending to Event Queue Failed!\n");
+	}
+
+	return NULL;
 }
 
 /*-----------------------------------------------------------*/
@@ -653,7 +744,7 @@ void List_Priority_Update(DD_Task_List_Node* list_head) {
 }
 
 void List_Sort(DD_Task_List_Node* list_head) {
-
+	// Potentially, hopefully, we don't have to do this.
 }
 
 void Remove_Overdue(uint32_t overdue_timer_id, DD_Task_List_Node* active_head, DD_Task_List_Node* overdue_head) {
@@ -681,6 +772,10 @@ void Remove_Overdue(uint32_t overdue_timer_id, DD_Task_List_Node* active_head, D
 	prev->next_node = curr->next_node; // Point the previous to current's next node, effectively removing current from the list.
 	curr->next_node = NULL; // Isolate current from the list.
 
+	// Remove the corresponding f_task so that the overdue task does not get allocated any time/resources.
+	vTaskDelete(curr->t_handle);
+	curr->t_handle = NULL;
+
 	// Add the overdue task to the front of the overdue list.
 	List_Push(overdue_head, curr);
 
@@ -689,6 +784,53 @@ void Remove_Overdue(uint32_t overdue_timer_id, DD_Task_List_Node* active_head, D
 
 	// This might be dangerous
 //	vPortFree(curr);
+}
+
+void Remove_Completed(uint32_t completed_dd_task_id, DD_Task_List_Node* active_head, DD_Task_List_Node* completed_head) {
+	// while the given nodes next is not null, and until the id matches continue to traverse
+	DD_Task_List_Node* curr = active_head->next_node;
+	DD_Task_List_Node* prev;
+
+	// First we check if the list is empty (i.e. dummy head points to dummy tail):
+	if (curr->next_node == NULL) {
+		printf("LIST ERROR - REMOVE COMPLETED ON EMPTY LIST");
+		return;
+	}
+	// We traverse the list until either we find what we're looking for, or we run out of list (i.e. we're on the dummy tail).
+	while ((curr->next_node != NULL) && (completed_dd_task_id != curr->task->task_id)) {
+		prev = curr;
+		curr = curr->next_node;
+	}
+	// If we're at the end of the line (where curr = dummy tail)...
+	if (curr->next_node == NULL) {
+		printf("LIST ERROR - COULD NOT FIND COMPLETED DD TASK");
+		return;
+	}
+
+	// Otherwise we must've found it so we set prev to curr's next, and curr's next to NULL.
+	prev->next_node = curr->next_node; // Point the previous to current's next node, effectively removing current from the list.
+	curr->next_node = NULL; // Isolate current from the list.
+
+	// Remove the corresponding f_task, mostly for posterity.
+	vTaskDelete(curr->t_handle);
+	curr->t_handle = NULL;
+
+	// Add the overdue task to the front of the overdue list.
+	List_Push(completed_head, curr);
+}
+
+uint8_t Get_List_Length(DD_Task_List_Node* list_head) {
+
+	uint8_t length = 0;
+	DD_Task_List_Node* curr = active_head->next_node;
+
+	// We traverse the list until we run out of list (i.e. we're on the dummy tail).
+	while (curr->next_node != NULL) {
+		length++;
+		curr = curr->next_node;
+	}
+
+	return length;
 }
 
 void DEBUG_Print_List(DD_Task_List_Node* list_head) {
