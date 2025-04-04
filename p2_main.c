@@ -162,6 +162,7 @@ typedef struct dd_task {
 	DD_Task_Type type;
 	uint32_t task_id;
 	uint8_t parent_id;
+	uint8_t priority;
 	uint32_t time_to_execute;
 	uint32_t release_time_ticks;
 	uint32_t absolute_deadline_ticks;
@@ -290,7 +291,7 @@ int main( void )
 
 
 	xTaskCreate( Scheduler_Task, "DD_Task_Scheduler", configMINIMAL_STACK_SIZE, NULL, SCHEDULER_TASK_PRIORITY, &scheduler_hotfix_handle ); // &dd_scheduler_handle );
-//	xTaskCreate( Monitor_Task, "DD_Task_Monitor", configMINIMAL_STACK_SIZE, NULL, MONITOR_TASK_PRIORITY, NULL ); // &dd_scheduler_handle );
+	xTaskCreate( Monitor_Task, "DD_Task_Monitor", configMINIMAL_STACK_SIZE, NULL, MONITOR_TASK_PRIORITY, NULL ); // &dd_scheduler_handle );
 
 	// Start the tasks and timer running (important for xTaskGetTickCount()).
 	vTaskStartScheduler();
@@ -421,6 +422,7 @@ static void DDT_Generator_Task( void *pvParameters )
 				task_type, // DD_Task_Type type
 				num_dd_tasks_generated + 100 * generator_id, // uint32_t task_id
 				generator_id, // uint8_t parent_id
+				USER_TASK_PRIORITY,
 				execution_time, // uint32_t time_to_execute
 				release_time, // uint32_t release_time_ticks,
 				deadline_ticks, // uint32_t absolute_deadline,
@@ -434,9 +436,6 @@ static void DDT_Generator_Task( void *pvParameters )
 			handle_dd_task(RELEASE, new_dd_task);
 
 			num_dd_tasks_generated++;
-
-//			printf("Finished creating a task.\n");
-
 		}
 		else {
 //			printf("%d - No more tasks to generate.\n", generator_id);
@@ -451,6 +450,8 @@ static void DDT_Generator_Task( void *pvParameters )
 static void Complete_Callback(TimerHandle_t timer) {
 	uint32_t complete_task_ID = *((uint32_t*) pvTimerGetTimerID(timer));
 //	printf("Timer ID: %d\n", complete_task_ID);
+
+//	printf("Completed timer [%d] expiry time (inside completed callback) is : %d\n", complete_task_ID, xTimerGetExpiryTime(timer));
 
 	// We can derive our parent id from the task id, which is equal to the timer ID!
 	if (complete_task_ID < 100) {
@@ -485,19 +486,21 @@ static void User_Defined_Task( void *pvParameters )
 	}
 
 	// FreeRTOS is unexpectedly making the scheduler 0 priority without our consent! So fix that?
-	vTaskPrioritySet(NULL, 1);
-	vTaskPrioritySet(scheduler_hotfix_handle, SCHEDULER_TASK_PRIORITY);
+//	vTaskPrioritySet(NULL, 1);
+//	vTaskPrioritySet(scheduler_hotfix_handle, SCHEDULER_TASK_PRIORITY);
 
-//	awduiawdioawuydioawuydioawuydioawuydaw''
-//	This guy is currently blocking the Scheduler for some reason... I wonder why?
-//			As far as I know, xTaskCreate should be non-blocking for the caller who called that function...
+//	This guy is currently blocking the Scheduler for some reason... Because for some reason our Scheduler gets demoted to priority 0.
 	while(1) {
-//		vTaskDelay(1);
-		if (vTaskPriorityGet(scheduler_hotfix_handle) == 0) {
-			printf("!!! SCHEDULER GOT DEMOTED.\N");
-			vTaskPrioritySet(NULL, 1);
-			vTaskPrioritySet(scheduler_hotfix_handle, SCHEDULER_TASK_PRIORITY);
-		}
+		vTaskDelay(1);
+//		if (uxTaskPriorityGet(scheduler_hotfix_handle) == 0) {
+//			printf("!!! SCHEDULER GOT DEMOTED.\n");
+//			vTaskPrioritySet(NULL, 1);
+//			vTaskPrioritySet(scheduler_hotfix_handle, SCHEDULER_TASK_PRIORITY);
+//		}
+//
+//		if (uxTaskPriorityGet(NULL) == 0) {
+//
+//		}
 	}
 }
 
@@ -507,7 +510,7 @@ static void Overdue_Callback(TimerHandle_t timer) {
 //	printf("\nOverdue callback\n");
 	uint32_t overdue_task_ID = *((uint32_t*) pvTimerGetTimerID(timer));
 	Scheduler_Event new_overdue_event = {OVERDUE, NULL, overdue_task_ID};
-
+//	printf("Overdue timer [%d] expiry time (inside overdue callback) is : %d\n", overdue_task_ID, xTimerGetExpiryTime(timer));
 	if (xQueueSend(event_queue_handle, &new_overdue_event, 500)) {
 		// do nothing
 	}
@@ -543,18 +546,36 @@ static void Scheduler_Task( void *pvParameters )
 				incoming_event.dd_task->t_handle = user_task_handle;
 
 				// Create a timer to determine if this event ever becomes overdue.
-				uint32_t overdue_deadline_ticks = incoming_event.dd_task->absolute_deadline_ticks;
 				uint32_t timer_id = incoming_event.dd_task->task_id;
+//				uint32_t overdue_deadline_ticks = incoming_event.dd_task->absolute_deadline_ticks;
 
-				// Save the timer in memory, just in case FreeRTOS garbage collects them when this if scope collapses.
-//				TimerHandle_t timer = xTimerCreate("General Timer", pdMS_TO_TICKS(time_to_execute), pdFALSE, &(dd_task->task_id), Complete_Callback); //Timer_Callback);
-				active_overdue_timers[num_timers] = xTimerCreate("DD_Task_Overdue_Timer", overdue_deadline_ticks, pdFALSE, &timer_id, Overdue_Callback);
-
-				if ( xTimerStart(active_overdue_timers[num_timers], 0) == pdFAIL) {
-					printf("Overdue Timer Failed to execute.");
+				// As it turns out, a fundamental misunderstanding means we don't create timers by deadlines; instead, by periods.
+				// Rather than change the data we carry (expensive refactor) we can just derive the period from the parent generator id.
+				uint32_t timer_period;
+				if (incoming_event.dd_task->parent_id == 0) {
+					timer_period = DD_TASK_0_PERIOD;
+				}
+				else if (incoming_event.dd_task->parent_id == 1) {
+					timer_period = DD_TASK_1_PERIOD;
+				}
+				else {
+					timer_period = DD_TASK_2_PERIOD;
 				}
 
+				// Save the timer in memory, just in case FreeRTOS garbage collects them when this if scope collapses.
+				TimerHandle_t timer = xTimerCreate("Overdue Timer", timer_period, pdFALSE, &timer_id, Complete_Callback); //Timer_Callback);
+//				active_overdue_timers[num_timers] = xTimerCreate("DD_Task_Overdue_Timer", overdue_deadline_ticks, pdFALSE, &timer_id, Overdue_Callback);
+
+				if ( xTimerStart(timer, 0) == pdFAIL) {
+//				if ( xTimerStart(active_overdue_timers[num_timers], 0) == pdFAIL) {
+					printf("Overdue Timer Failed to execute.");
+				}
+//				printf("Overdue timer [%d] expiry time is: %d\n", timer_id, xTimerGetExpiryTime(timer));
+//				printf("Overdue timer [%d] expiry time is: %d\n", timer_id, xTimerGetExpiryTime(active_overdue_timers[num_timers]));
 				num_timers++;
+
+				// Idea; are we hitting the max number of timer's we're allowed to use?
+				// Hypothesis: Increase max to solve - #define configTIMER_TASK_STACK_DEPTH	( configMINIMAL_STACK_SIZE * 2 ) must be changed
 
 				// Add the new node to the list.
 				DD_Task_List_Node* new_active_node = pvPortMalloc(sizeof(DD_Task_List_Node));
@@ -620,6 +641,7 @@ static void Scheduler_Task( void *pvParameters )
 //			while(1);
 //		}
 
+		taskYIELD();
 //		vTaskDelay(50);
 	}
 }
@@ -744,7 +766,6 @@ DD_Task_List_Node* List_Init( void ) {
 	DD_Task_List_Node* head = pvPortMalloc(sizeof(DD_Task_List_Node));
 	DD_Task_List_Node* tail = pvPortMalloc(sizeof(DD_Task_List_Node));
 
-//	head->task = NULL;
 	head->task = pvPortMalloc(sizeof(DD_Task));
 	*(head->task) = (DD_Task) {
 		NULL,
@@ -758,7 +779,6 @@ DD_Task_List_Node* List_Init( void ) {
 	};
 	head->next_node = tail;
 
-//	tail->task = NULL;
 	tail->task = pvPortMalloc(sizeof(DD_Task));
 	*(tail->task) = (DD_Task) {
 		NULL,
@@ -819,7 +839,6 @@ void List_Push(DD_Task_List_Node* list_head, DD_Task_List_Node* new_node) {
 }
 
 void Smart_Active_Insert(DD_Task_List_Node* list_head, DD_Task_List_Node* new_node) {
-//	printf("\nSmart Insert\n");
 	DD_Task_List_Node* curr = list_head->next_node;
 	DD_Task_List_Node* prev = list_head;
 
@@ -860,15 +879,15 @@ void Smart_Active_Insert(DD_Task_List_Node* list_head, DD_Task_List_Node* new_no
 		}
 	}
 
-	// OPTIMIZATION: We only need to change priorities if the new node was inserted after the dummy head (slot 1).
-	if (prev->task->type == DUMMY) {
-		printf("Insert affected priorities.\n");
-		List_Priority_Update(list_head);
-	}
-
 	// Otherwise, we have found the correct position to insert into.
 	prev->next_node = new_node;
 	new_node->next_node = curr;
+
+	// OPTIMIZATION: We only need to change priorities if the new node was inserted after the dummy head (slot 1).
+	if (prev->task->type == DUMMY) {
+//		printf("Insert affected priorities.\n");
+		List_Priority_Update(list_head);
+	}
 
 	// IDEALLY because we are inserting into a position which invokes sorted priority, we do not have to further sort the list.
 	// We expect all deadlines to approach at equal speed, so there is no need to sort the list.
@@ -878,7 +897,6 @@ void Smart_Active_Insert(DD_Task_List_Node* list_head, DD_Task_List_Node* new_no
 }
 
 void List_Priority_Update(DD_Task_List_Node* list_head) {
-//	printf("\nPriority Update\n");
 	DD_Task_List_Node* curr = list_head->next_node;
 
 	// If we start at the dummy tail...
@@ -888,14 +906,17 @@ void List_Priority_Update(DD_Task_List_Node* list_head) {
 	}
 
 	vTaskPrioritySet(curr->task->t_handle, 1);
+	curr->task->priority = 1; // We introduced this just for visibility and debug purposes.
 
 	// TODO - Possible optimization; we do not need to traverse the list if the list is pristine and the way we want it to be and that we've accounted for edge cases.
 	while (curr->next_node != NULL) {
 		vTaskPrioritySet(curr->next_node->task->t_handle, 0);
+		curr->task->priority = 0;
 		curr = curr->next_node;
 	}
 }
 
+// We actually never do! NICE
 void List_Sort(DD_Task_List_Node* list_head) {
 	// Potentially, hopefully, we don't have to do this.
 }
